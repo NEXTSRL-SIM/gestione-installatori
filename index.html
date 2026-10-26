@@ -1,0 +1,2487 @@
+<!DOCTYPE html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>Gestione installatori</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap">
+<style>body{margin:0;background:#f2f4f7;font-family:Manrope,system-ui,sans-serif;color:#111827;padding:22px 24px}
+.att{font-size:13px;color:#6b7686}.chiave{max-width:420px;background:#fff;border:1px solid #e2e7ee;border-radius:14px;padding:18px}
+.chiave p{font-size:13px;color:#6b7686;margin:0 0 10px}.chiave form{display:flex;gap:8px}
+.chiave input{flex:1;border:1px solid #e2e7ee;border-radius:999px;padding:9px 14px;font:inherit;font-size:13px}
+.chiave button{background:#0891b2;color:#fff;border:0;border-radius:999px;padding:9px 18px;font:inherit;font-weight:700;cursor:pointer}
+html[data-tema="scuro"] body{background:#0f141b;color:#e6ebf2}</style></head>
+<body><h1 style="font-size:26px;font-weight:800;letter-spacing:-.02em;margin:0 0 12px">Gestione installatori</h1><div id="carico"><p class="att">Carico le pratiche…</p></div>
+<script>
+function buildHtml(d){
+  const esc = s => (s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  // esc per stringa incorporata in codice JS (single-quote / backslash)
+  const jesc = s => (s==null?'':String(s)).replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+  // -------------------- PROXY DOCUMENTI (anti ERR_BLOCKED_BY_CLIENT) ---------
+  // I link diretti allo storage Supabase (pnxhthrheqeucoisifjw.supabase.co) sono
+  // richieste di TERZA PARTE rispetto al dominio n8n che ospita questa pagina:
+  // Edge (prevenzione tracciamento) e gli adblocker li bloccano con
+  // ERR_BLOCKED_BY_CLIENT e il file non si apre. Li facciamo quindi passare dal
+  // webhook proxy /webhook/doc, ospitato sullo STESSO dominio della pagina
+  // (prima parte -> nessun blocco). Il proxy scarica il file dallo storage e lo
+  // restituisce; accetta solo url public dello storage (bucket documenti /
+  // contratti / preventivi). Gli url non-storage vengono restituiti invariati.
+  // IMPORTANTE: si passano BUCKET e PERCORSO separati, MAI l'url completo in ?u=.
+  // Verificato il 27/07: se l'indirizzo del link contiene la stringa del dominio
+  // storage (…supabase.co…), anche solo come parametro, le protezioni del browser
+  // (prevenzione tracciamento Edge, adblocker) bloccano l'apertura e la scheda va
+  // in errore; con ?b=<bucket>&p=<percorso> quel nome non compare e il PDF si apre.
+  function docUrl(u){
+    const s = String(u||'');
+    if(!s) return '';
+    const PRE = 'https://pnxhthrheqeucoisifjw.supabase.co/storage/v1/object/public/';
+    if(s.indexOf(PRE) !== 0) return s;
+    const resto = s.slice(PRE.length);
+    const i = resto.indexOf('/');
+    if(i < 1) return s;
+    const bucket = resto.slice(0, i);
+    const perc = resto.slice(i + 1);
+    return 'https://n8n.srv1030489.hstgr.cloud/webhook/doc?b=' + encodeURIComponent(bucket) + '&p=' + encodeURIComponent(perc);
+  }
+  // -------------------- DOWNLOAD DIRETTO DEI DOCUMENTI -----------------------
+  // Verificato il 27/07 (prove reali, in ordine): (1) link diretto allo storage ->
+  // ERR_BLOCKED_BY_CLIENT; (2) proxy /webhook/doc: il server risponde 200
+  // application/pdf ma la scheda aperta dal LINK viene comunque bloccata dal
+  // browser (lo stesso indirizzo DIGITATO a mano si apre); (3) scheda vuota
+  // aperta e poi portata su un blob: -> resta su about:blank (Chrome) / errore
+  // cross-origin (Edge); (4) anteprima in overlay con iframe -> bloccata da Edge.
+  // COSTANTE in tutte le prove: la fetch dalla pagina verso il proxy funziona
+  // SEMPRE e il salvataggio con <a download> su blob url funziona SEMPRE.
+  // DECISIONE: niente anteprima. Il documento viene SCARICATO direttamente
+  // (fetch -> blob -> <a download>), unica strada affidabile su tutti i browser.
+  // Vedi apriDoc() nello SCRIPT.
+  // docName: nome del documento, usato come nome del file salvato e nel messaggio
+  // di avanzamento; ricavato dall'ultima parte del percorso.
+  function docName(u, fallback){
+    const s = String(u||'').split('?')[0];
+    const last = s.slice(s.lastIndexOf('/')+1);
+    let n = last;
+    try{ n = decodeURIComponent(last); }catch(e){ n = last; }
+    return n || fallback || 'documento.pdf';
+  }
+  // docOpenAttr: attributi href/onclick del pulsante documento; il click AVVIA IL
+  // DOWNLOAD (apriDoc), non apre nulla. L'url passato ad apriDoc e' SEMPRE quello
+  // prodotto da docUrl() (forma ?b=&p=). Doppio escaping:
+  // jesc() per la stringa JS (apici/backslash) + esc() per l'attributo HTML.
+  function docOpenAttr(u, nome){
+    return ' href="#" onclick="event.preventDefault();event.stopPropagation();apriDoc(\''
+      + esc(jesc(docUrl(u))) + '\',\'' + esc(jesc(nome)) + '\');return false;"';
+  }
+  const LOGO = 'https://pnxhthrheqeucoisifjw.supabase.co/storage/v1/object/public/preventivi/logos/next_logo_black.png';
+
+  // ---- Pagina di errore (payload non valido) ----
+  if(!d || !d.ok){
+    return '<!doctype html><meta charset="utf-8"><body style="font-family:sans-serif;padding:40px;background:#f5f6f8;color:#1f2330"><h2>Dati non disponibili</h2><p>La RPC gestione_next_data non ha restituito dati validi.</p></body>';
+  }
+
+  const installatori = Array.isArray(d.installatori) ? d.installatori : [];
+  const pratiche     = Array.isArray(d.pratiche)     ? d.pratiche     : [];
+
+  // -------------------- HELPER GENERICI -------------------------------------
+  const num = n => (n==null?'':String(n).replace('.',','));
+
+  // Normalizza date_installazione (array | stringa json | stringa) -> array
+  function datesArr(p){
+    let a = p.date_installazione;
+    if(Array.isArray(a)) return a.filter(Boolean);
+    if(typeof a === 'string'){
+      try{ const j=JSON.parse(a); if(Array.isArray(j)) return j.filter(Boolean); }catch(e){}
+      if(a.trim()) return [a.trim()];
+    }
+    return [];
+  }
+
+  // Data compatta 'gg/mm' (come nel mockup) — '—' se assente/non valida
+  function dataDM(v){
+    if(!v) return '—';
+    let s;
+    if(v instanceof Date){
+      if(isNaN(v.getTime())) return '—';
+      s = v.getFullYear()+'-'+String(v.getMonth()+1).padStart(2,'0')+'-'+String(v.getDate()).padStart(2,'0');
+    } else { s = String(v); }
+    const t = s.slice(0,10).split('-');
+    if(t.length!==3 || !t[0] || !t[1] || !t[2]) return '—';
+    return t[2]+'/'+t[1]+'/'+t[0].slice(2);
+  }
+
+  // Chiave di recency (piu' recenti in alto): usa il timestamp piu' avanzato tra
+  // le date disponibili, poi practice_id come fallback.
+  function tsOf(p){
+    let m=0;
+    [p.presa_in_carico_at,p.accettata_at,p.rifiutata_at,p.data_sopralluogo].forEach(v=>{
+      if(v){ const t=Date.parse(v); if(!isNaN(t)&&t>m) m=t; }
+    });
+    return m;
+  }
+  function recentDesc(a,b){
+    const dd = tsOf(b)-tsOf(a);
+    if(dd) return dd;
+    const na=Number(a.practice_id), nb=Number(b.practice_id);
+    if(!isNaN(na)&&!isNaN(nb)) return nb-na;
+    return String(b.practice_id).localeCompare(String(a.practice_id));
+  }
+
+  // -------------------- DROPDOWN "ASSEGNA A…" (senza duplicati) --------------
+  // installatori: [{id, nome, coordinatore(bool), coordinatore_id, fv, termico}]
+  // Mostra installatori e coordinatori senza duplicati; i coordinatori con
+  // etichetta "(coordinatore)", gli altri "(installatore)".
+  const seenAssign = {};
+  const assignItems = [];
+  installatori.forEach(i=>{
+    if(i==null) return;
+    const key = String(i.id);
+    if(seenAssign[key]) return;
+    seenAssign[key]=1;
+    assignItems.push(i);
+  });
+  // -------------------- FILTRO PER SPECIALIZZAZIONE (fv / termico) -----------
+  // REGOLA: nei menu di ASSEGNAZIONE compaiono SOLO gli installatori abilitati al
+  // tipo di impianto della pratica (p.tipo_scheda):
+  //   'termico'      -> solo chi ha termico === true
+  //   'fotovoltaico' -> solo chi ha fv === true
+  //   tipo mancante / sconosciuto -> nessun filtro (elenco completo, come prima)
+  // CASO REALE: TECNO TERMICA SRL ha fv=false e termico=true, quindi NON deve
+  // comparire nei menu delle pratiche FOTOVOLTAICHE (solo su quelle termiche);
+  // GHIOTTO (fv=true, termico=false) e' il caso speculare; GREEN TEAM e
+  // TECNOGREEN (entrambi true) compaiono ovunque.
+  // ECCEZIONI — compaiono SEMPRE, anche se non superano il filtro:
+  //   * l'installatore GIA ASSEGNATO alla pratica (selectedId): senza questa
+  //     eccezione, nel menu "Riassegna" pre-selezionato sparirebbe il valore
+  //     corrente e si perderebbe il dato a video.
+  // COORDINATORI — NON sono piu' esenti dal filtro (correzione del 30/07). Un
+  // coordinatore non esegue i lavori: li SMISTA ai PROPRI installatori, quindi se
+  // nessuno dei suoi fa quel tipo di impianto non ha senso proporlo. REGOLA: un
+  // coordinatore e' abilitato a un tipo di pratica se ha LUI STESSO quel flag
+  // (i.fv / i.termico) OPPURE se almeno UNO degli installatori che dipendono da lui
+  // (coordinatore_id === id del coordinatore) ha quel flag a true.
+  // CASO REALE DUREGON ALESSANDRO (verificato il 30/07): coordinatore con fv=false
+  // e termico=false, i cui quattro installatori (GHIOTTO, DABRAIO, MARAVIGLIA,
+  // SOLAR ENERGY GROUP) sono TUTTI solo fotovoltaico -> DUREGON deve comparire sulle
+  // pratiche FOTOVOLTAICHE ma NON su quelle TERMICHE, dove prima compariva a torto.
+  // La capacita' dei coordinatori e' calcolata UNA SOLA VOLTA qui sotto (mappa
+  // id_coordinatore -> {fv, termico}), MAI dentro il ciclo delle opzioni: altrimenti
+  // verrebbe ricostruita per ogni pratica e per ogni menu.
+  const capCoord = {};
+  installatori.forEach(i=>{
+    if(i==null || i.coordinatore_id==null) return;
+    const k = String(i.coordinatore_id);
+    if(!capCoord[k]) capCoord[k] = {fv:false, termico:false};
+    if(i.fv===true)      capCoord[k].fv = true;
+    if(i.termico===true) capCoord[k].termico = true;
+  });
+  // Abilitazione di un COORDINATORE: flag propri OR flag dei suoi installatori.
+  function coordAbilitato(i, tipoPratica){
+    const c = capCoord[String(i.id)] || {fv:false, termico:false};
+    if(tipoPratica==='termico')      return (i.termico===true) || (c.termico===true);
+    if(tipoPratica==='fotovoltaico') return (i.fv===true)      || (c.fv===true);
+    return true;                                                            // tipo assente/sconosciuto
+  }
+  function abilitatoPerTipo(i, tipoPratica, selectedId){
+    if(i==null) return false;
+    if(selectedId!=null && String(selectedId)===String(i.id)) return true;  // gia assegnato: sempre
+    if(i.coordinatore===true) return coordAbilitato(i, tipoPratica);        // coordinatore: capacita' dei suoi
+    if(tipoPratica==='termico')      return i.termico===true;
+    if(tipoPratica==='fotovoltaico') return i.fv===true;
+    return true;                                                            // tipo assente/sconosciuto
+  }
+  // Opzione mostrata quando, dopo il filtro, non resta nessun nominativo: non e'
+  // un errore, e' una mancanza di anagrafica (flag fv/termico non impostati).
+  const NO_INST_OPT = '<option value="" disabled>Nessun installatore abilitato</option>';
+  function assignOptions(selectedId, firstLabel, tipoPratica){
+    let out = '<option value="">'+firstLabel+'</option>';
+    const lista = assignItems.filter(i=>abilitatoPerTipo(i, tipoPratica, selectedId));
+    if(!lista.length) return out + NO_INST_OPT;
+    lista.forEach(i=>{
+      const lbl = esc(i.nome||('#'+i.id)) + (i.coordinatore===true ? ' (coordinatore)' : ' (installatore)');
+      const sel = (selectedId!=null && String(selectedId)===String(i.id)) ? ' selected' : '';
+      out += '<option value="'+esc(i.id)+'"'+sel+'>'+lbl+'</option>';
+    });
+    return out;
+  }
+  function sopOptions(tipoPratica){
+    let out = '<option value="">&mdash; Nessuno &mdash;</option>';
+    const lista = assignItems.filter(i=>abilitatoPerTipo(i, tipoPratica, null));
+    if(!lista.length) return out + NO_INST_OPT;
+    lista.forEach(i=>{ out += '<option value="'+esc(i.id)+'">'+esc(i.nome||('#'+i.id))+'</option>'; });
+    return out;
+  }
+
+  // -------------------- MENU "APRI PORTALI" (hamburger, header alto a destra) --
+  // Elenca i nominativi per aprire il rispettivo portale in nuova scheda:
+  //   sezione COORDINATORI (coordinatore===true) + riga divisoria + INSTALLATORI.
+  // URL portale = webhook area-installatore?t=<access_token> (per elemento di
+  // d.installatori). Chi non ha access_token e' mostrato disabilitato.
+  // RIASSUNTO IN CIMA — quello che aspetta, prima ancora di scorrere le schede.
+  // Il pallino sul pulsante dice QUALE pratica; questa fascia dice QUANTE cose
+  // ci sono e permette di aprirle direttamente. Se non c'e' niente in attesa,
+  // o se la chiamata a lotti_in_attesa non ha risposto, non compare nulla.
+  function fasciaAttesa(){
+    const att = d._attesa || {};
+    const chiavi = Object.keys(att);
+    if (!chiavi.length) return '';
+    const nome = {};
+    pratiche.forEach(function(p){ if(p.practice_id && !nome[p.practice_id]) nome[p.practice_id] = p.cliente; });
+    const tot = chiavi.reduce(function(s,k){ return s + (att[k].file||0); }, 0);
+    const voci = chiavi.map(function(k){
+      const u = 'https://n8n.srv1030489.hstgr.cloud/webhook/docs-ai?practice_id='
+              + encodeURIComponent(k)
+              + (att[k].lotto ? '&lotto=' + encodeURIComponent(att[k].lotto) : '')
+              + '&azione=controllo&area=next';
+      return '<a class="att-v'+(att[k].doppioni?' dop':'')+'" href="'+esc(u)+'" target="_blank" rel="noopener"'
+           + (att[k].doppioni ? ' title="'+att[k].lotti+' caricamenti con gli stessi file: approvane uno solo"' : '')
+           + '>' + esc(nome[k] || 'pratica senza nome')
+           + '<span class="att-n">'+att[k].file+'</span>'
+           + (att[k].doppioni ? '<span class="att-d">&times;'+att[k].lotti+'</span>' : '')
+           + '</a>';
+    }).join('');
+    const quantiDop = chiavi.filter(function(k){ return att[k].doppioni; }).length;
+    return '<div class="attesa">'
+      + '<div class="att-t">&#9888;&#65039; '
+      + (chiavi.length===1 ? 'Una pratica ha' : chiavi.length+' pratiche hanno')
+      + ' documenti caricati e non ancora approvati — <b>'+tot+(tot===1?' documento':' documenti')+'</b> in tutto'
+      + (quantiDop ? ' <span style="font-weight:400">· in '+(quantiDop===1?'una':quantiDop)+' l’installatore ha caricato due volte gli stessi file: approvane un lotto solo</span>' : '')
+      + '</div>'
+      + '<div class="att-l">'+voci+'</div></div>';
+  }
+
+  function portalMenu(){
+    const PORTAL_BASE = 'https://n8n.srv1030489.hstgr.cloud/webhook/area-installatore?t=';
+    const byNome = (a,b) => String(a.nome||'').localeCompare(String(b.nome||''), 'it', {sensitivity:'base'});
+    const coord = assignItems.filter(i=>i && i.coordinatore===true).slice().sort(byNome);
+    const inst  = assignItems.filter(i=>i && i.coordinatore!==true).slice().sort(byNome);
+    function itemHtml(i){
+      const nome = esc(i.nome||('#'+i.id));
+      if(!i.access_token){
+        return '<span class="pmenu-item dis" title="Portale non disponibile (token mancante)">'+nome+'</span>';
+      }
+      const url = PORTAL_BASE + encodeURIComponent(i.access_token);
+      return '<a class="pmenu-item" href="'+esc(url)+'" target="_blank" rel="noopener">'+nome+'</a>';
+    }
+    let out = '';
+    out += '<div class="pmenu-sec">Coordinatori</div>';
+    out += coord.length ? coord.map(itemHtml).join('') : '<div class="pmenu-empty">Nessun coordinatore</div>';
+    out += '<div class="pmenu-div"></div>';
+    out += '<div class="pmenu-sec">Installatori</div>';
+    out += inst.length ? inst.map(itemHtml).join('') : '<div class="pmenu-empty">Nessun installatore</div>';
+    return '<div class="pmenu" id="pmenuWrap">'
+      +'<button class="pmenu-btn" type="button" onclick="togglePortalMenu(event)" title="Apri portali" aria-label="Apri portali">&#9776;</button>'
+      +'<div class="pmenu-drop" id="pmenuDrop">'+out+'</div>'
+    +'</div>';
+  }
+
+  // -------------------- FASCETTE -------------------------------------------
+  // INCASSATO (alto a sinistra) — il COLORE indica il livello di pagamento
+  function ribbon(p){
+    const lv = p.pagamento_livello;
+    if(lv==='acconto30') return '<span class="paid-rib r-30">INCASSATO</span>';
+    if(lv==='acconto50') return '<span class="paid-rib r-50">INCASSATO</span>';
+    if(lv==='saldo')     return '<span class="paid-rib r-saldo">INCASSATO</span>';
+    return ''; // 'nessuno' / assente -> nessuna fascetta
+  }
+  // PAGATA (basso a destra, verde) — la fattura dell'installatore e' saldata
+  function ribbonPagata(p){
+    return p.fattura_pagata===true ? '<span class="pagata-rib">PAGATA</span>' : '';
+  }
+
+  // -------------------- CHIP TIPO INTERVENTO -------------------------------
+  // Deriva il tipo di intervento della pratica e la classe cromatica dedicata:
+  //   Nuovo impianto = verde (.ti-nuovo), Ampliamento = arancio (.ti-ampl),
+  //   Rifacimento totale = rosso (.ti-rifac), Aggiunta accumulo = viola (.ti-accumulo).
+  //   * TERMICO -> SEMPRE "Nuovo impianto" (nel termico e' sempre nuovo).
+  //   * FOTOVOLTAICO -> da imp_esistente/imp_percorso:
+  //       imp_esistente==='no' -> Nuovo impianto
+  //       imp_esistente==='si' -> rifacimento? Rifacimento totale : accumulo? Aggiunta accumulo : Ampliamento
+  //       imp_esistente vuoto/null -> nessun chip (intervento da definire).
+  function tipoIntervento(p){
+    if(p.tipo_scheda==='termico') return {label:'Nuovo impianto', cls:'ti-nuovo'};
+    const ex = p.imp_esistente;
+    if(ex==='no') return {label:'Nuovo impianto', cls:'ti-nuovo'};
+    if(ex==='si'){
+      const perc = p.imp_percorso;
+      if(perc==='rifacimento') return {label:'Rifacimento totale', cls:'ti-rifac'};
+      if(perc==='accumulo')    return {label:'Aggiunta accumulo', cls:'ti-accumulo'};
+      return {label:'Ampliamento', cls:'ti-ampl'};
+    }
+    return null; // imp_esistente vuoto/null (solo FV) -> nessun chip
+  }
+  function tipoInterventoChip(p, extraCls){
+    const t = tipoIntervento(p);
+    const xc = extraCls ? (' '+extraCls) : '';
+    return t ? '<span class="chip'+xc+' '+t.cls+'">'+esc(t.label)+'</span>' : '';
+  }
+
+  // -------------------- CHIP FLASH IMPIANTO --------------------------------
+  // Classificazione ESCLUSIVA su p.tipo_scheda ('termico' | 'fotovoltaico').
+  //   * TERMICO: nessun chip FV. Ordine chip termici (classe .c-term, tinta calda):
+  //       (a) Caldaia/Pompa = "Pigma 80"(o 50) + " t.<taglia>"; se nessuna pigma ma
+  //           altro -> l'altro; (b) Valvole + " ×<num>"; (c) Clima (stringa).
+  //   * FOTOVOLTAICO: chip FV come prima (kWp, accumulo, colonnina, ...).
+  //   In coda, SEMPRE, il chip TIPO INTERVENTO.
+  // extraCls: classe aggiuntiva applicata a OGNI chip (in aggiunta a 'chip' e alla
+  // tinta). Usata dalla cronologia per applicare la variante compatta '.chip-cron'
+  // riusando ESATTAMENTE la stessa logica/colori delle card normali. Se omessa,
+  // comportamento identico a prima (usato da tutte le altre viste).
+  function chips(p, extraCls){
+    const f=p.flash||{}; const out=[];
+    const xc = extraCls ? (' '+extraCls) : '';
+    if(p.tipo_scheda==='termico'){
+      const t=f.termico||{};
+      // (a) Caldaia/Pompa — Pigma 80/50 + taglia; se nessuna pigma, l'altro
+      let hasPigma=false;
+      if(t.pigma80){ let s='Pigma 80'; if(t.pigma80_taglia) s+=' t.'+esc(t.pigma80_taglia); out.push('<span class="chip'+xc+' c-term">'+s+'</span>'); hasPigma=true; }
+      if(t.pigma50){ let s='Pigma 50'; if(t.pigma50_taglia) s+=' t.'+esc(t.pigma50_taglia); out.push('<span class="chip'+xc+' c-term">'+s+'</span>'); hasPigma=true; }
+      if(!hasPigma && (t.altro===true || t.altro_desc)) out.push('<span class="chip'+xc+' c-term">'+esc(t.altro_desc||'Altro')+'</span>');
+      // (b) Valvole termostatiche + numero
+      if(t.valvole){ let s='Valvole'; if(t.valvole_num) s+=' &times;'+esc(t.valvole_num); out.push('<span class="chip'+xc+' c-term">'+s+'</span>'); }
+      // (c) Clima (stringa modello)
+      if(t.clima) out.push('<span class="chip'+xc+' c-term">'+esc(t.clima)+'</span>');
+    } else {
+      // FOTOVOLTAICO
+      if(f.kwp) out.push('<span class="chip'+xc+' c-fv">FV '+esc(num(f.kwp))+' kWp</span>');
+      if(f.accumulo){
+        let t='con accumulo';
+        if(f.marca_accumulo) t+=' '+esc(f.marca_accumulo);
+        if(f.kwh) t+=' '+esc(num(f.kwh))+' kWh';
+        out.push('<span class="chip'+xc+' c-ok">'+t+'</span>');
+      } else {
+        out.push('<span class="chip'+xc+' c-no">senza accumulo</span>');
+      }
+      if(f.colonnina) out.push('<span class="chip'+xc+' c-amp">Colonnina</span>');
+      if(f.ottimizzatori){
+        let t='Ottimizzatori';
+        if(f.moduli_numero) t+=' &times;'+esc(f.moduli_numero);
+        out.push('<span class="chip'+xc+' c-neutral">'+t+'</span>');
+      }
+      if(f.inverter){
+        let t='Inverter '+esc(f.inverter)+(f.trifase===true?' trifase':' monofase');
+        out.push('<span class="chip'+xc+' c-neutral">'+t+'</span>');
+      }
+      if(f.moduli){
+        let t='Moduli '+esc(f.moduli);
+        if(f.moduli_numero) t+=' &times;'+esc(f.moduli_numero);
+        if(f.moduli_potenza_wp) t+=' '+esc(num(f.moduli_potenza_wp))+' Wp';
+        out.push('<span class="chip'+xc+' c-neutral">'+t+'</span>');
+      }
+      if(f.integrato) out.push('<span class="chip'+xc+' c-ok">Integrato</span>');
+      // BACKUP — chip riassuntivo (card chiusa) mostrato SOLO se il contratto
+      // prevede il sistema backup. Confronto stretto ===true: null/assente -> nessun chip.
+      if(f.backup===true) out.push('<span class="chip'+xc+' c-ok">Backup</span>');
+    }
+    // Chip TIPO INTERVENTO (sempre in coda) — eredita la stessa classe extra
+    const ti = tipoInterventoChip(p, extraCls);
+    if(ti) out.push(ti);
+    return out.join('');
+  }
+
+  // -------------------- FLASH ROSSO "DISCREPANZA" + BOX CONFRONTO -----------
+  // I valori di confronto Odoo<->contratto sono calcolati a monte (blocco I/O) e
+  // agganciati alla pratica come:
+  //   p._confronto : array [{campo, contratto, odoo, diverge}] di TUTTE le voci
+  //                  effettivamente confrontabili (contratto e Odoo disponibili).
+  //   p._disc      : sottoinsieme di p._confronto con diverge===true.
+  // Se Odoo non ha risposto / ordine assente -> p._confronto/_disc non esistono
+  // (nessun flash, nessun box: fail-safe silenzioso).
+  function discBadge(p){
+    const dd = Array.isArray(p._disc) ? p._disc : [];
+    if(!dd.length) return '';
+    return '<span class="disc" title="Discrepanza tra ordine Odoo e contratto">&#9888; DISCREPANZA</span>';
+  }
+  function confrontoBox(p){
+    const rows = Array.isArray(p._confronto) ? p._confronto : [];
+    if(!rows.length) return '';
+    let body = '<div class="cfr-row cfr-head"><span>Voce</span><span>Contratto</span><span>Odoo</span></div>';
+    rows.forEach(r=>{
+      // WiFi = voce NON bloccante: resta nel confronto ma NON viene evidenziata in
+      // rosso (non entra nel flash discrepanza). Classe neutra '.nb' + nota.
+      const nonBlocking = (r.campo==='WiFi');
+      const cls = nonBlocking ? 'nb' : (r.diverge ? 'ko' : 'ok');
+      const campoLbl = esc(r.campo) + (nonBlocking ? ' <span class="cf-nb">(non bloccante)</span>' : '');
+      body += '<div class="cfr-row '+cls+'">'
+        +'<span class="cf-campo">'+campoLbl+'</span>'
+        +'<span class="cf-contr">'+esc(r.contratto)+'</span>'
+        +'<span class="cf-odoo">'+esc(r.odoo)+'</span>'
+      +'</div>';
+    });
+    // Conteggio coerente col flash: esclude la voce WiFi (non bloccante).
+    const nDiv = rows.filter(r=>r.diverge && r.campo!=='WiFi').length;
+    const sub = nDiv ? (nDiv+' '+(nDiv===1?'voce divergente':'voci divergenti')) : 'Tutto coincide';
+    return '<div class="box confronto"><div class="box-t">&#9878; Confronto Odoo &harr; contratto <span class="cfr-sub">('+esc(sub)+')</span></div>'+body+'</div>';
+  }
+
+  // -------------------- FASCIA DATE (Sopralluogo / Installazione) + badge ----
+  function trBlock(p, showAccBadge){
+    const di = datesArr(p);
+    let instHtml;
+    if(di.length){
+      instHtml = '<span class="tr-vals">'+di.map(v=>'<span class="tr-val">'+esc(dataDM(v))+'</span>').join('')+'</span>';
+    } else {
+      instHtml = '<span class="tr-val">&mdash;</span>';
+    }
+    const badge = showAccBadge ? '<span class="badge b-acc">Accettata</span>' : '';
+    // Ordine (dx -> sx): [badge Accettata] all'angolo, poi [Installazione], poi [Sopralluogo].
+    // Le chip stanno in un sotto-contenitore che resta a SINISTRA del badge; il badge
+    // e' l'ultimo elemento (nowrap) e resta pinnato nell'angolo in alto a destra.
+    return '<span class="tr">'
+      +'<span class="tr-chips">'
+        +'<span class="tr-col c-sop"><span class="tr-lbl">Sopralluogo</span><span class="tr-val">'+esc(dataDM(p.data_sopralluogo))+'</span></span>'
+        +'<span class="tr-col c-inst"><span class="tr-lbl">Installazione</span>'+instHtml+'</span>'
+      +'</span>'
+      +badge
+    +'</span>';
+  }
+
+  // -------------------- SEZIONE IMPIANTO (quadranti, da flash) ---------------
+  // Classificazione ESCLUSIVA su p.tipo_scheda: una card mostra SOLO la sezione
+  // del suo tipo.
+  //   * TERMICO -> sezione "Impianto termico" a quadranti (stile arancio):
+  //       Caldaia/Pompa (Pigma + taglia), Valvole termostatiche (Sì/No + ×num),
+  //       Clima (modello o No), Kit WiFi (Sì/No) + tile full-width "Altro".
+  //   * FOTOVOLTAICO -> sezione impianto FV a quadranti (come prima).
+  function impianto(p){
+    const f=p.flash||{};
+    const yn = b => b ? '<span class="yes">Sì</span>' : '<span class="no">No</span>';
+    // ----- TERMICO (esclusivo) -----
+    if(p.tipo_scheda==='termico'){
+      const t=f.termico||{};
+      let caldaia='—';
+      if(t.pigma80){ caldaia='Pigma 80'; if(t.pigma80_taglia) caldaia+=' <span class="muted">&middot; t.'+esc(t.pigma80_taglia)+'</span>'; }
+      else if(t.pigma50){ caldaia='Pigma 50'; if(t.pigma50_taglia) caldaia+=' <span class="muted">&middot; t.'+esc(t.pigma50_taglia)+'</span>'; }
+      let valv;
+      if(t.valvole){ valv='<span class="yes">Sì</span>'; if(t.valvole_num) valv+=' <span class="muted">&middot; &times;'+esc(t.valvole_num)+'</span>'; }
+      else valv='<span class="no">No</span>';
+      const clima = t.clima ? esc(t.clima) : '<span class="no">No</span>';
+      let out='<div class="imp-grid imp-term">'
+        +'<div class="itile term"><span class="il"><span class="ico r">&#128293;</span>Caldaia/Pompa</span><span class="iv">'+caldaia+'</span></div>'
+        +'<div class="itile term"><span class="il"><span class="ico r">&#127777;</span>Valvole termostatiche</span><span class="iv">'+valv+'</span></div>'
+        +'<div class="itile term"><span class="il"><span class="ico r">&#10052;</span>Clima</span><span class="iv light">'+clima+'</span></div>'
+        +'<div class="itile term"><span class="il"><span class="ico r">&#128246;</span>Kit WiFi</span><span class="iv">'+yn(!!t.kit_wifi)+'</span></div>';
+      if(t.altro===true || t.altro_desc){
+        out+='<div class="itile term full"><span class="il"><span class="ico r">&#9881;</span>Altro</span><span class="iv light">'+esc(t.altro_desc||'Altro')+'</span></div>';
+      }
+      out+='</div>';
+      return out;
+    }
+    // ----- FOTOVOLTAICO (esclusivo) -----
+    let out = '';
+    {
+      const inv = f.inverter ? (esc(f.inverter)+' <span class="muted">&middot; '+(f.trifase===true?'Trifase':'Monofase')+'</span>') : '—';
+      // Riga Moduli — descrizione ESTESA: <brand modello> + potenza (Wp) + dimensioni.
+      // Mostra SEMPRE i dati estesi quando esistono; per le sigle Q.410/Q.470 senza
+      // modulo a catalogo i campi estesi sono null -> resta la sola sigla (f.moduli).
+      let mod;
+      if(f.moduli){
+        mod = esc(f.moduli);
+        if(f.moduli_numero)     mod += ' <span class="muted">&middot; &times;'+esc(f.moduli_numero)+' moduli</span>';
+        if(f.moduli_potenza_wp) mod += ' <span class="muted">&middot; '+esc(num(f.moduli_potenza_wp))+' Wp</span>';
+        if(f.moduli_dimensioni) mod += ' <span class="muted">&middot; '+esc(f.moduli_dimensioni)+'</span>';
+      } else {
+        mod = '—';
+      }
+      let acc;
+      if(f.accumulo){
+        acc = esc(f.marca_accumulo||'Sì');
+        if(f.kwh) acc += ' <span class="muted">&middot; '+esc(num(f.kwh))+' kWh</span>';
+      } else { acc = '<span class="no">No</span>'; }
+      out += '<div class="imp-grid">'
+        +'<div class="itile"><span class="il"><span class="ico o">&#9889;</span>Potenza</span><span class="iv">'+(f.kwp?esc(num(f.kwp))+' kWp':'—')+'</span></div>'
+        +'<div class="itile"><span class="il"><span class="ico">&#128268;</span>Inverter</span><span class="iv">'+inv+'</span></div>'
+        +'<div class="itile full"><span class="il"><span class="ico">&#9638;</span>Moduli</span><span class="iv light">'+mod+'</span></div>'
+        +'<div class="itile"><span class="il"><span class="ico g">&#128267;</span>Accumulo</span><span class="iv">'+acc+'</span></div>'
+        +'<div class="itile"><span class="il"><span class="ico">&#9881;</span>Ottimizzatori</span><span class="iv">'+yn(!!f.ottimizzatori)+'</span></div>'
+        +'<div class="itile"><span class="il"><span class="ico">&#127968;</span>Impianto integrato</span><span class="iv">'+yn(!!f.integrato)+'</span></div>'
+        // TRIFASE — voce ESPLICITA (Sì/No) accanto a "Impianto integrato": stessa
+        // funzione yn() e stesso stile delle tile vicine. Resta comunque anche
+        // l'indicazione "Trifase/Monofase" appesa alla tile Inverter (sopra) e al
+        // chip inverter in chips().
+        +'<div class="itile"><span class="il"><span class="ico o">&#9889;</span>Trifase</span><span class="iv">'+yn(f.trifase===true)+'</span></div>'
+        // BACKUP — voce ESPLICITA (Sì/No) subito dopo "Trifase": indica se il
+        // contratto prevede il sistema BACKUP. Valore dalla chiave flash f.backup
+        // esposta dalla RPC; confronto STRETTO ===true cosi' null/assente = No
+        // (nessun falso positivo). Icona lampadina (&#128161;) non usata altrove
+        // nel quadrante: la batteria (&#128267;) e' gia' dell'Accumulo.
+        +'<div class="itile"><span class="il"><span class="ico g">&#128161;</span>Backup</span><span class="iv">'+yn(f.backup===true)+'</span></div>'
+        +'<div class="itile"><span class="il"><span class="ico p">&#128664;</span>Colonnina</span><span class="iv">'+yn(!!f.colonnina)+'</span></div>'
+        +'</div>';
+    }
+    if(!out) out = '<div class="imp-empty">Nessun dato impianto disponibile.</div>';
+    return out;
+  }
+
+  // -------------------- BOX LAYOUT / SCHEMA UNIFILARE ------------------------
+  // Distingue file PRESENTE vs ASSENTE (come portale coordinatore/installatore):
+  //   * p.schema_unifilare_url valorizzato -> pulsante "Scarica PDF" attivo (download diretto)
+  //   * assente -> stato "Non disponibile" con grafica in tenue (thumb spenta)
+  const LAY_SVG = '<svg viewBox="0 0 200 120" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg"><g stroke="#5A7184" stroke-width="2.4"><line x1="52" y1="60" x2="82" y2="60"/><line x1="118" y1="60" x2="148" y2="60"/><line x1="100" y1="74" x2="100" y2="96"/></g><g fill="#fff" stroke="#5A7184" stroke-width="2.4"><rect x="20" y="46" width="32" height="28" rx="3"/><rect x="84" y="46" width="32" height="28" rx="3"/><rect x="148" y="46" width="32" height="28" rx="3"/><rect x="84" y="96" width="32" height="16" rx="3"/></g></svg>';
+  function layoutBox(p){
+    const url = p.schema_unifilare_url;
+    if(url){
+      return '<div class="box layout"><div class="box-t">&#128204; Layout e schema unifilare</div>'
+        +'<div class="lay-one"><div class="thumb">'+LAY_SVG+'</div>'
+        +'<div class="meta"><div class="t">Layout e schema unifilare</div><div class="s">Documento fornito dallo studio &middot; sola lettura</div></div>'
+        +'<a class="pdf"'+docOpenAttr(url, docName(url,'layout-schema-unifilare.pdf'))+'>&#128196; Scarica PDF</a></div></div>';
+    }
+    return '<div class="box layout"><div class="box-t">&#128204; Layout e schema unifilare</div>'
+      +'<div class="lay-one lay-none"><div class="thumb thumb-none">'+LAY_SVG+'</div>'
+      +'<div class="meta"><div class="t">Layout e schema unifilare</div><div class="s">Documento non ancora caricato dallo studio</div></div>'
+      +'<span class="pdf-none">&#9711; Non disponibile</span></div></div>';
+  }
+  // Box SCHEMA per il TERMICO — stessa veste del box FV, titolo "Schema impianto",
+  // condizionale su schema_unifilare_url (Scarica PDF vs Non disponibile).
+  function schemaTermicoBox(p){
+    const url = p.schema_unifilare_url;
+    if(url){
+      return '<div class="box layout"><div class="box-t">&#128204; Schema impianto</div>'
+        +'<div class="lay-one"><div class="thumb">'+LAY_SVG+'</div>'
+        +'<div class="meta"><div class="t">Schema impianto</div><div class="s">Documento fornito dallo studio &middot; sola lettura</div></div>'
+        +'<a class="pdf"'+docOpenAttr(url, docName(url,'schema-impianto.pdf'))+'>&#128196; Scarica PDF</a></div></div>';
+    }
+    return '<div class="box layout"><div class="box-t">&#128204; Schema impianto</div>'
+      +'<div class="lay-one lay-none"><div class="thumb thumb-none">'+LAY_SVG+'</div>'
+      +'<div class="meta"><div class="t">Schema impianto</div><div class="s">Documento non ancora caricato dallo studio</div></div>'
+      +'<span class="pdf-none">&#9711; Non disponibile</span></div></div>';
+  }
+  // Dispatch box schema in ALTO (prima dei quadranti impianto): termico -> "Schema
+  // impianto"; fotovoltaico -> box layout/schema unifilare esistente.
+  function schemaBox(p){
+    return (p.tipo_scheda==='termico') ? schemaTermicoBox(p) : layoutBox(p);
+  }
+  // -------------------- DOCUMENTI CARICATI (tessere reali) ------------------
+  // La RPC gestione_next_data fornisce p.documenti: array di
+  // { id, doc_type, file_name, file_url, mime_type, created_at, caricato_da,
+  //   numero, dettaglio, ruolo_persona, sezione }
+  // con sezione === 'cliente' | 'sopralluogo' | 'fine_lavori' | 'studio'.
+  // ALLINEAMENTO AL PORTALE INSTALLATORE (31/07, rifinitura con Sante): stessa
+  // ripartizione in TRE SEZIONI CON TITOLO E CONTEGGIO, stesse etichette, stesse
+  // icone (riquadrino con l'ESTENSIONE, niente emoji), stessi colori per sezione.
+  //   'cliente'     -> "Documenti cliente"              (identita, tessera sanitaria,
+  //                    visura, bollette, contratto firmato, comproprietario, moduli)
+  //   'sopralluogo' -> "Documenti sopralluogo"          (report, foto stato esistente)
+  //   'fine_lavori' -> "Documenti impianto installato"  (DiCo, foto realizzato,
+  //                    autotest inverter, matricole inverter/batteria)
+  // La sezione 'studio' (layout / schema unifilare) NON compare qui: ha gia' il suo
+  // box dedicato (vedi layoutBox()/schemaTermicoBox()). Una sezione sconosciuta o
+  // mancante finisce in "Documenti cliente": nessun documento sparisce.
+  const DOC_LABELS = {
+    // --- sezione cliente ---
+    carta_identita: 'Carta d’identita',
+    tessera_sanitaria: 'Tessera sanitaria',
+    visura_catastale: 'Visura catastale',
+    bolletta_luce: 'Bolletta luce',
+    bolletta_gas: 'Bolletta gas',
+    contratto_firmato: 'Contratto firmato',
+    doc_comproprietario: 'Documento identita',
+    cf_comproprietario: 'Codice fiscale',
+    modulo_sen_catastali: 'Modulo SEN',
+    modulo_firma: 'Modulo firma',
+    // --- sezione sopralluogo ---
+    report_sopralluogo: 'Report sopralluogo',
+    foto_impianto_esistente: 'Foto sopralluogo',
+    // --- sezione fine lavori / impianto installato ---
+    dico_nuovo: 'DiCo impianto',
+    foto_impianto_realizzato: 'Foto impianto realizzato',
+    test_inverter: 'Autotest inverter',
+    matricola_inverter: 'Matricola inverter',
+    matricola_batteria: 'Matricola batteria'
+  };
+
+  // Iniziale maiuscola + resto minuscolo, parola per parola (cosi' "PROPRIETARIO"
+  // -> "Proprietario", "DE LUCA" -> "De Luca", "D'ANGELO" -> "D'Angelo").
+  const capitalizza = s => String(s==null?'':s).toLowerCase()
+    .replace(/(^|[\s'’\-])([a-zà-öø-ÿ])/g, (m,sep,ch)=>sep+ch.toUpperCase());
+
+  // RIGA SECONDARIA — solo per i DOCUMENTI DEL CLIENTE, riporta il RUOLO
+  // (Proprietario / Cointestatario), non il cognome. Indicazione di Sante: il nome
+  // sul file non serve, serve distinguere di chi sono i documenti di identita
+  // quando l'immobile e' intestato a due persone. Il dato arriva da
+  // doc.ruolo_persona, valorizzato dalla RPC solo sui documenti cliente (mai su
+  // foto, DiCo, matricole, schemi dello studio).
+  function docSub(doc){
+    const r = (doc.ruolo_persona==null) ? '' : String(doc.ruolo_persona).trim();
+    if(!r) return '';
+    const txt = esc(capitalizza(r));
+    return '<span class="dsub" title="'+txt+'">'+txt+'</span>';
+  }
+
+  // SET ICONE "D" scelto da Sante: niente simbolo grafico/emoji, un riquadrino con
+  // l'ESTENSIONE del file (PDF rosso tenue, immagini azzurro tenue, resto grigio).
+  function docExt(doc){
+    const nome = String(doc.file_name || doc.file_url || '');
+    const m = nome.match(/\.([a-zA-Z0-9]{2,5})(?:\?|$)/);
+    let e = m ? m[1].toUpperCase() : '';
+    if(!e && /pdf/i.test(doc.mime_type||'')) e = 'PDF';
+    if(!e && /^image\//i.test(doc.mime_type||'')) e = 'IMG';
+    if(e === 'JPEG') e = 'JPG';
+    const cls = (e==='PDF') ? 'ext pdf' : (/^(JPG|PNG|HEIC|WEBP|GIF|IMG)$/.test(e) ? 'ext img' : 'ext oth');
+    return '<span class="'+cls+'">'+esc(e || 'FILE')+'</span>';
+  }
+
+  function docTile(doc){
+    // Etichetta principale: voce di DOC_LABELS + qualificatore (fronte/retro o
+    // numero progressivo), cosi' le tessere di identita restano distinguibili fra
+    // loro e la riga sotto dice solo di chi sono.
+    const base = DOC_LABELS[doc.doc_type] || doc.file_name || 'Documento';
+    let det = (doc.dettaglio==null) ? '' : String(doc.dettaglio).trim();
+    if(!det && doc.numero!=null) det = String(doc.numero).trim();
+    const lbl = esc(det ? (base+' '+det) : base);
+    const sub = docSub(doc);   // '' su tutto cio' che non e' documento del cliente
+    const dl = doc.file_url
+      ? '<a class="dget"'+docOpenAttr(doc.file_url, doc.file_name || docName(doc.file_url, base))+'>Scarica</a>'
+      : '';
+    return '<div class="doctile">'+docExt(doc)+'<span class="dl">'+lbl+'</span>'+sub+dl+'</div>';
+  }
+
+  // Ordine STABILE dentro ogni sezione: prima per doc_type, poi per nome file.
+  // Confronto con localeCompare(numeric) cosi' "foto 2" viene prima di "foto 10".
+  function ordinaDocs(arr){
+    return arr.slice().sort((a,b)=>{
+      const ta = String((a&&a.doc_type)||''), tb = String((b&&b.doc_type)||'');
+      const ct = ta.localeCompare(tb, 'it', {numeric:true, sensitivity:'base'});
+      if(ct !== 0) return ct;
+      const fa = String((a&&a.file_name)||''), fb = String((b&&b.file_name)||'');
+      return fa.localeCompare(fb, 'it', {numeric:true, sensitivity:'base'});
+    });
+  }
+
+  // Sezione con titolo e conteggio; se VUOTA non disegna nulla (niente titoli a
+  // vuoto). COLORE PER SEZIONE: 'cls' e' la classe di tinta applicata al
+  // CONTENITORE e da li, per discendenza CSS, colora titolo (.docs-gt), sfondo /
+  // bordo / testo delle tessere (.doctile, .dl) e la riga secondaria (.dsub).
+  //   'g-cli' -> azzurro | 'g-sop' -> ambra | 'g-fin' -> verde
+  function docsGroup(titolo, arr, cls){
+    if(!arr.length) return '';
+    return '<div class="docs-group'+(cls?' '+cls:'')+'">'
+      +'<div class="docs-gt">'+esc(titolo)+' ('+arr.length+')</div>'
+      +'<div class="docs-grid">'+ordinaDocs(arr).map(docTile).join('')+'</div>'
+    +'</div>';
+  }
+
+  function docsBox(p){
+    const docs = Array.isArray(p.documenti) ? p.documenti : [];
+    const cli = [], sop = [], fin = [];
+    docs.forEach(x=>{
+      if(!x) return;
+      const s = (x.sezione==null ? '' : String(x.sezione)).trim().toLowerCase();
+      if(s === 'studio')           return;   // gia mostrato nel box "Layout e schema unifilare"
+      if(s === 'sopralluogo')      sop.push(x);
+      else if(s === 'fine_lavori') fin.push(x);
+      else                         cli.push(x);   // 'cliente' + sconosciuta/mancante
+    });
+    const inner = docsGroup('Documenti cliente', cli, 'g-cli')
+                + docsGroup('Documenti sopralluogo', sop, 'g-sop')
+                + docsGroup('Documenti impianto installato', fin, 'g-fin');
+    // Nessun documento in nessuna sezione (o solo documenti dello studio) ->
+    // stesso messaggio di quando non c'e' proprio nulla.
+    // "Vedi i documenti" — sta su OGNI pratica, non solo su quelle con roba da
+    // approvare: apre la panoramica di tutta la pratica (documenti cliente,
+    // sopralluogo, impianto montato) sulla pagina di WF-DOCS-AI-v2, dove le foto
+    // si vedono in miniatura senza aprire né scaricare niente.
+    // area=next e' quello che sblocca l'archivio: il collegamento che riceve
+    // l'installatore non lo porta e a lui restano soltanto i suoi file.
+    // onclick usa stopP, NON stop: stop() fa preventDefault e impedirebbe al
+    // collegamento di aprirsi. Qui serve solo non far chiudere la scheda.
+    // pallino ambra se l'installatore ha caricato qualcosa che non e' ancora entrato
+    // in archivio: e' il modo di accorgersene senza dipendere dalla mail.
+    const att = (d._attesa||{})[p.practice_id];
+    const vd = 'https://n8n.srv1030489.hstgr.cloud/webhook/docs-ai?practice_id='
+             + encodeURIComponent(p.practice_id||'')
+             + (att && att.lotto ? '&lotto=' + encodeURIComponent(att.lotto) : '')
+             + '&azione=controllo&area=next';
+    const pallino = att
+     ? '<span class="pall" title="'+att.file+(att.file===1?' documento':' documenti')+' in attesa di approvazione'
+        +(att.doppioni ? ' — attenzione: '+att.lotti+' caricamenti con gli stessi file' : (att.lotti>1?' in '+att.lotti+' caricamenti':''))+'"></span>'
+      : '';
+    return '<div class="box docs"><div class="box-t"><span>&#128193; Documenti caricati</span>'
+      +'<a class="vedidoc'+(att?' attesa':'')+'" href="'+esc(vd)+'" target="_blank" rel="noopener" onclick="stopP(event)">'
+      + pallino + '&#128065; Vedi i documenti</a></div>'
+      +(inner || '<div class="docs-none">Nessun documento caricato</div>')
+    +'</div>';
+  }
+
+    // -------------------- SOLLECITI DOCUMENTI (blocco 098-SOLLECITI) ---------
+  // Se all'installatore e' stato chiesto qualcosa che non e' ancora arrivato: le voci
+  // aperte, quando parte il prossimo sollecito (datario per spostarlo), Blocca invio /
+  // Riprendi, e "chiudi" su una voce per chiuderla a mano. Le azioni passano dal webhook
+  // gestione-next-azioni -> gestione_next_action -> sollecito_comando.
+  // Il dato arriva gia' pronto dalla RPC gestione_next_data (campo richiesta_documenti).
+  function sollBox(p, readonly){
+    const r = p.richiesta_documenti;
+    if (!r || !r.aperte) return '';
+    const pid = jesc(p.practice_id);
+    const idAttr = esc(p.practice_id);
+    const giorno = s => s ? new Date(s).toLocaleDateString('it-IT', { timeZone:'Europe/Rome' }) : '';
+    const quando = r.prossimo_invio ? new Date(r.prossimo_invio).toLocaleString('it-IT', { timeZone:'Europe/Rome', weekday:'long', day:'2-digit', month:'long', hour:'2-digit', minute:'2-digit' }) : '';
+    const statoTxt =
+        r.stato === 'attesa'   ? (r.prossimo_tipo === 'ferma' ? 'Avviso "pratica ferma" a Next e amministrazione: ' + quando : 'Prossimo sollecito: ' + quando)
+      : r.stato === 'sospesa'  ? 'Sospeso: l’installatore ha caricato il ' + giorno(r.sospesa_at) + ', si aspetta il nostro controllo'
+      : r.stato === 'bloccata' ? 'Bloccato a mano: nessun sollecito in agenda'
+      : r.stato === 'ferma'    ? 'Pratica ferma: tre solleciti senza risposta, il sistema non scrive più all’installatore'
+      : r.stato === 'in_invio' ? 'Sollecito in partenza proprio ora'
+      : r.stato;
+    const colore = (r.stato === 'ferma') ? '#b91c1c' : (r.stato === 'bloccata' ? '#6b7280' : '#9a3412');
+    const voci = (r.voci || []).filter(v => v.stato === 'aperta');
+    const dataVal = r.prossimo_invio ? new Date(r.prossimo_invio).toLocaleDateString('sv-SE', { timeZone:'Europe/Rome' }) : '';
+    return '<div class="box soll" style="border-left:3px solid #d9534f">'
+      + '<div class="box-t">&#9200; Documenti richiesti all’installatore</div>'
+      + '<div style="font-weight:600;color:' + colore + ';margin:4px 0">' + esc(statoTxt) + '</div>'
+      + '<div style="font-size:12px;color:#6b7280;margin-bottom:6px">Chiesti il ' + esc((r.richieste_date || []).join(', '))
+      + (r.solleciti_inviati ? ' · solleciti partiti: ' + r.solleciti_inviati : '') + '</div>'
+      + '<ul style="margin:0 0 8px;padding-left:18px">' + voci.map(v => '<li style="margin:3px 0">' + esc(v.testo)
+          + (!readonly ? ' <button class="act ghost" style="padding:1px 8px;font-size:11px;margin-left:6px" onclick="stop(event);sollChiudi(\'' + pid + '\',\'' + jesc(v.id) + '\',this)" title="Chiudi a mano questa voce">chiudi</button>' : '')
+          + '</li>').join('') + '</ul>'
+      + (!readonly
+          ? '<div class="frm">'
+            + '<input type="date" id="solld_' + idAttr + '" value="' + esc(dataVal) + '" onclick="stopP(event)" style="margin-right:6px"> '
+            + '<button class="act" onclick="stop(event);sollSposta(\'' + pid + '\')">Sposta sollecito</button> '
+            + ((r.stato === 'bloccata' || r.stato === 'ferma')
+                ? '<button class="act ghost" onclick="stop(event);sollCmd(\'' + pid + '\',\'sollecito_riprendi\')">Riprendi</button>'
+                : '<button class="act ghost" onclick="stop(event);sollCmd(\'' + pid + '\',\'sollecito_blocca\')">Blocca invio</button>')
+            + '</div><div id="sollmsg_' + idAttr + '" style="font-size:12px;margin-top:6px"></div>'
+          : '')
+      + '</div>';
+  }
+  // -------------------- SEZIONE DATE editabile (Sopralluogo / Installazione) --
+  // Stessa veste dell'area installatore; salva via webhook gestione-next-azioni
+  // (azioni salva_sopralluogo / salva_installazione della RPC gestione_next_action).
+  function dateBox(p){
+    const pid = jesc(p.practice_id);
+    const idAttr = esc(p.practice_id);
+    const sopVal = esc((p.data_sopralluogo||'').toString().slice(0,10));
+    return '<div class="box sop"><div class="box-t">&#128205; Sopralluogo</div>'
+        +'<div class="sopgrid">'
+          +'<label>Data<input type="date" id="sopd_'+idAttr+'" onclick="stopP(event)" value="'+sopVal+'"></label>'
+          +'<label>Modalità<select id="sopm_'+idAttr+'" onclick="stopP(event)">'
+            +'<option value="">—</option>'
+            +'<option value="telematico"'+(p.sopralluogo_modalita==='telematico'?' selected':'')+'>Telematico</option>'
+            +'<option value="presenza"'+(p.sopralluogo_modalita==='presenza'?' selected':'')+'>In presenza</option>'
+          +'</select></label>'
+        +'</div>'
+        +'<div class="sop-actions"><button class="act" onclick="stop(event);salvaSop(\''+pid+'\')">Salva</button></div>'
+      +'</div>'
+      +'<div class="box inst"><div class="box-t">&#128295; Installazione</div>'
+        +'<div id="dates_'+idAttr+'" class="dates"></div>'
+        +'<div class="frm"><button class="act ghost" onclick="stop(event);addDate(\''+pid+'\')">+ Giorno</button><button class="act" onclick="stop(event);salvaInst(\''+pid+'\')">Salva date</button></div>'
+      +'</div>'
+      +'<div id="msg_'+idAttr+'" class="msg"></div>';
+  }
+
+  // -------------------- BOX NOTE (Contratto RO + Per installatore editabile) -
+  // 1) "Note contratto"  -> sola lettura, area scrollabile, valore da
+  //    p.note_contratto (RPC: coalesce(fv_altro_desc, note, '')).
+  // 2) "Note per l'installatore" -> textarea editabile (p.note_installatore),
+  //    con "Salva note" -> webhook gestione-next-azioni (azione salva_note della
+  //    RPC gestione_next_action). L'operatore copia dal campo 1 la parte utile,
+  //    la incolla nel campo 2, aggiunge eventuali indicazioni e salva.
+  // In modalita' readonly (tab "Per installatore" / conclusi) entrambi i campi
+  // sono in sola lettura (nessuna textarea / bottone).
+  function noteBox(p, readonly){
+    const pid = jesc(p.practice_id);
+    const idAttr = esc(p.practice_id);
+    // TERMICO -> palette calda tenue (arancio) sul box note e sui campi note.
+    // FOTOVOLTAICO -> resta il fondo azzurrino esistente.
+    const termCls = (p.tipo_scheda==='termico') ? ' term' : '';
+    const contr = (p.note_contratto||'').toString();
+    const inst  = (p.note_installatore||'').toString();
+    const contrHtml = contr.trim()
+      ? '<div class="notero">'+esc(contr).replace(/\n/g,'<br>')+'</div>'
+      : '<div class="noteempty">Nessuna nota dal contratto.</div>';
+    if(readonly){
+      const instHtml = inst.trim()
+        ? '<div class="notero">'+esc(inst).replace(/\n/g,'<br>')+'</div>'
+        : '<div class="noteempty">Nessuna nota per l&rsquo;installatore.</div>';
+      return '<div class="box notebox'+termCls+'"><div class="box-t">&#128221; Note</div>'
+        +'<div class="nlbl">Note contratto <span class="nsub">(sola lettura)</span></div>'+contrHtml
+        +'<div class="nlbl" style="margin-top:10px">Note per l&rsquo;installatore</div>'+instHtml
+      +'</div>';
+    }
+    return '<div class="box notebox'+termCls+'"><div class="box-t">&#128221; Note</div>'
+      +'<div class="nlbl">Note contratto <span class="nsub">(sola lettura)</span></div>'+contrHtml
+      +'<div class="nlbl" style="margin-top:10px">Note per l&rsquo;installatore</div>'
+      +'<textarea id="noteinst_'+idAttr+'" class="noteinst" onclick="stop(event)" placeholder="Copia qui la parte utile dalle note del contratto, aggiungi eventuali indicazioni e salva.">'+esc(inst)+'</textarea>'
+      +'<div class="note-actions"><button class="act" onclick="stop(event);salvaNote(\''+pid+'\')">Salva note</button></div>'
+      +'<div id="notemsg_'+idAttr+'" class="msg"></div>'
+    +'</div>';
+  }
+
+  // -------------------- RIFERIMENTI ODOO (OV / OA installazione) -------------
+  // Numeri arricchiti a monte (I/O): p._so_name / p.odoo_sale_order_fv_id (sale.order)
+  // e p._po_name / p._po_id (purchase.order installazione). Resi come LINK verso
+  // Odoo quando l'id e' disponibile, altrimenti come testo non linkato.
+  //   sale.order    -> https://next-srl.odoo.com/odoo/sales/<saleOrderId>
+  //   purchase.order -> https://next-srl.odoo.com/odoo/purchase/<poId>
+  function odooRef(tag, kind, id, label){
+    const txt = tag+'&nbsp;<b>'+esc(label)+'</b>';
+    if(id!=null && String(id)!==''){
+      const url = 'https://next-srl.odoo.com/odoo/'+kind+'/'+esc(id);
+      return '<a class="oref" href="'+url+'" target="_blank" rel="noopener" onclick="event.stopPropagation()">'+txt+'</a>';
+    }
+    return '<span class="oref">'+txt+'</span>';
+  }
+  function odooRefsInner(p){
+    let out='';
+    if(p._so_name) out += odooRef('OV','sales', p.odoo_sale_order_fv_id, p._so_name);
+    if(p._po_name) out += odooRef('OA','purchase', p._po_id, p._po_name);
+    return out;
+  }
+  // BLOCCO UNICO OV/OA — reso IN FONDO ALLA CARD (in basso a destra, appena sopra
+  // la fascetta .pagata-rib), con posizione IDENTICA in ogni vista/modalita'
+  // (active, assigned, readonly, done, deleted). E' l'UNICA collocazione: non
+  // compare piu' ne' dentro i controlli ne' sotto l'indirizzo. Quando la fattura
+  // e' PAGATA aggiunge .orefs-lift per lasciare spazio alla fascetta verde.
+  function odooRefsBlock(p){
+    const inner = odooRefsInner(p);
+    if(!inner) return '';
+    const lift = (p.fattura_pagata===true) ? ' orefs-lift' : '';
+    return '<span class="orefs orefs-card'+lift+'" title="Ordini Odoo (vendita / acquisto installazione)">'+inner+'</span>';
+  }
+  const uploadBox =
+    '<div class="box up"><div class="box-t">&#128228; Carica documenti (Next)</div>'
+    +'<div class="drop" onclick="stop(event)"><span class="ic">&#128228;</span><span class="big">Trascina qui o seleziona</span><span class="sm">Carica un documento se Next deve intervenire</span></div></div>';
+
+  // -------------------- CONTROLLI (Assegna / Sopralluoghista / Odoo) ---------
+  // mode: 'active'   -> In entrata: dropdown "Assegna a…" attivo (— Seleziona —)
+  //       'assigned' -> Assegnate: dropdown pre-selezionato (— Riassegna —)
+  function ctrls(p, mode){
+    const pid = jesc(p.practice_id);
+    const idAttr = esc(p.practice_id);
+    const assignedId = (p.assegnato_installatore_id!=null) ? p.assegnato_installatore_id : p.coordinatore_id;
+    const first = (mode==='assigned') ? '&mdash; Riassegna &mdash;' : '&mdash; Seleziona &mdash;';
+    const preSel = (mode==='assigned') ? assignedId : null;
+    // Tipo impianto della pratica: filtra i menu per specializzazione (vedi
+    // abilitatoPerTipo). Passato grezzo: se manca/e' sconosciuto -> nessun filtro.
+    const tipoPratica = p.tipo_scheda;
+    return '<div class="ctrls" onclick="stop(event)">'
+      +'<label>Assegna a&hellip;'
+        +'<select id="asg_'+idAttr+'" onclick="stop(event)" onchange="assegna(\''+pid+'\',this)">'+assignOptions(preSel, first, tipoPratica)+'</select>'
+      +'</label>'
+      +'<label>Sopralluoghista (opz.)'
+        +'<select id="sop_'+idAttr+'" onclick="stop(event)">'+sopOptions(tipoPratica)+'</select>'
+      +'</label>'
+      +'<button class="act odoo" onclick="stop(event)">Crea ordine in Odoo</button>'
+    +'</div>';
+  }
+
+  // -------------------- CARD PRATICA ----------------------------------------
+  // opts.mode : 'active' | 'assigned' | 'readonly'
+  function card(p, opts){
+    opts = opts||{};
+    const mode = opts.mode;
+    // readonly: nessun controllo di assegnazione / date editabili
+    // ('readonly' = tab "Per installatore"; 'done' = lavori conclusi apribili;
+    //  'deleted' = sezione Eliminate, sola lettura come i conclusi)
+    const readonly = (mode==='readonly' || mode==='done' || mode==='deleted');
+    const isDone = (mode==='done' || mode==='deleted');
+    const accettata = !!p.accettata_at;
+    const rifiutata = !!p.rifiutata_at;
+    const showAcc = (mode!=='active') && accettata; // badge Accettata solo sulle assegnate
+
+    const ind = [p.indirizzo,p.civico].filter(Boolean).join(' ');
+    const right = [p.cap,p.citta,p.provincia?('('+p.provincia+')'):''].filter(Boolean).join(' ');
+    const loc = [ind,right].filter(Boolean).join(' — ');
+
+    const tel = (p.cliente_telefono||'').replace(/\s+/g,'');
+    const contatti=[];
+    if(tel) contatti.push('<a class="lnk" href="tel:'+esc(tel)+'">&#128222; '+esc(p.cliente_telefono)+'</a>');
+    if(p.cliente_email) contatti.push('<a class="lnk" href="mailto:'+esc(p.cliente_email)+'">&#9993; '+esc(p.cliente_email)+'</a>');
+
+    // Riga "Assegnata a:" (colonna Assegnate + lavori conclusi)
+    let assignedLine='';
+    if(mode==='assigned' || isDone){
+      const an = p.assegnato_a || p.coordinatore_nome || '—';
+      const lbl = isDone ? 'Installatore' : 'Assegnata a';
+      assignedLine = '<span class="ct">&#128100; '+lbl+': <strong>'+esc(an)+'</strong></span>';
+    }
+
+    let cls='det';
+    if(readonly) cls+=' ro';   // card SENZA controlli -> altezza compatta (no min-height fisso)
+    if(rifiutata) cls+=' rej';
+
+    // Testo per il filtro testuale (cliente + indirizzo/citta + installatore assegnato)
+    const assegnatoTxt = [p.assegnato_a, p.coordinatore_nome].filter(Boolean).join(' ');
+    const searchText = [p.cliente, loc, assegnatoTxt].filter(Boolean).join(' ').toLowerCase();
+    // Tipo scheda per le sotto-schede Fotovoltaico / Termico — CLASSIFICAZIONE
+    // ESCLUSIVA su p.tipo_scheda ('termico' | 'fotovoltaico'). Ogni card appartiene
+    // a UNA sola scheda; default 'fotovoltaico' se il valore manca. La logica di
+    // appartenenza e' in typeMatch (uguaglianza esatta su data-tipo).
+    const tipo = (p.tipo_scheda==='termico') ? 'termico' : 'fotovoltaico';
+    // Flag per i filtri "Senza sopralluogo" / "Senza installazione":
+    //   nosop=1  -> data_sopralluogo vuota/non impostata
+    //   noinst=1 -> nessuna data in date_installazione
+    const hasSop  = !!(p.data_sopralluogo && String(p.data_sopralluogo).trim());
+    const hasInst = datesArr(p).length > 0;
+    const noSopAttr  = hasSop ? '0' : '1';
+    const noInstAttr = hasInst ? '0' : '1';
+
+    return '<details class="'+cls+'" data-cliente="'+esc((p.cliente||'').toLowerCase())+'" data-incasso="'+esc(p.pagamento_livello||'nessuno')+'" data-tipo="'+tipo+'" data-nosop="'+noSopAttr+'" data-noinst="'+noInstAttr+'" data-search="'+esc(searchText)+'">'
+      +'<summary>'
+        +ribbon(p)
+        +ribbonPagata(p)
+        +trBlock(p, showAcc)
+        +'<span class="main">'
+          +'<span class="nm">'+esc(p.cliente||'—')+'</span>'
+          +'<span class="dt">'+esc(loc)+'</span>'
+          +(contatti.length?('<span class="ct">'+contatti.join('<span class="sep">·</span>')+'</span>'):'')
+          +assignedLine
+        +'</span>'
+        +'<span class="info">'+discBadge(p)+'<span class="chips">'+chips(p)+'</span></span>'
+        +(!readonly ? ctrls(p, mode) : '')
+        +odooRefsBlock(p)
+        +'<span class="arrow">&#9656;</span>'
+      +'</summary>'
+      +'<div class="body">'
+        +confrontoBox(p)
+        +schemaBox(p)
+        +'<div class="box impianto"><div class="box-t">Impianto</div>'+impianto(p)+'</div>'
+        +noteBox(p, readonly)
+        +(!readonly ? dateBox(p) : '')
+        +docsBox(p)
+        +sollBox(p, mode === 'deleted')
+        +(!isDone ? uploadBox : '')
+        +(rifiutata?'<div class="rejbar">&#9888; Rifiutata &mdash; da riassegnare</div>':'')
+        +stateActions(p, mode)
+      +'</div>'
+    +'</details>';
+  }
+
+  // -------------------- AZIONI STATO MANUALE (Sposta in concluse / Ripristina) -
+  // Barra in fondo al corpo card. Sulle ATTIVE (in entrata / assegnate) mostra
+  // "Sposta in concluse"; sulle CONCLUSE mostra "Ripristina tra le attive".
+  // Entrambe POST al webhook gestione-next-azioni (azioni sposta_conclusi /
+  // ripristina_attiva) -> la RPC gestione_next_action scrive stato_next_manuale.
+  function stateActions(p, mode){
+    const pid = jesc(p.practice_id);
+    // Pulsante "Elimina scheda" (rosso tenue) — sposta la scheda nelle Eliminate
+    // (NON cancella: scrive stato_next_manuale='eliminata' via azione sposta_eliminate).
+    const del = '<button class="act danger" onclick="stop(event);eliminaScheda(\''+pid+'\')">&#128465; Elimina scheda</button>';
+    if(mode==='active' || mode==='assigned'){
+      return '<div class="statebar">'
+        +'<button class="act warn" onclick="stop(event);spostaConclusi(\''+pid+'\')">&#9989; Sposta in concluse</button>'
+        +del
+      +'</div>';
+    }
+    if(mode==='done'){
+      return '<div class="statebar">'
+        +'<button class="act ghost" onclick="stop(event);ripristina(\''+pid+'\')">&#8635; Ripristina tra le attive</button>'
+        +del
+      +'</div>';
+    }
+    // 'deleted' — card nella sezione Eliminate: solo Ripristina (torna tra le attive)
+    if(mode==='deleted'){
+      return '<div class="statebar"><button class="act ghost" onclick="stop(event);ripristina(\''+pid+'\')">&#8635; Ripristina tra le attive</button></div>';
+    }
+    return '';
+  }
+
+  // -------------------- SUDDIVISIONE PRATICHE -------------------------------
+  // Le liste ATTIVE e i conclusi selezionano per stato_next specifico: le pratiche
+  // con stato_next==='eliminata' restano quindi ESCLUSE da inEntrata/assegnate/conclusi
+  // (e di conseguenza da kanban attivi, filtri incasso e tab "Per installatore",
+  // che derivano da 'assegnate'). Compaiono SOLO nella sezione Eliminate qui sotto.
+  const inEntrata = pratiche.filter(p=>p.stato_next==='in_entrata').sort(recentDesc);
+  const assegnate = pratiche.filter(p=>p.stato_next==='assegnata').sort(recentDesc);
+  const conclusi  = pratiche.filter(p=>p.stato_next==='lavori_conclusi').sort(recentDesc);
+  const eliminate = pratiche.filter(p=>p.stato_next==='eliminata').sort(recentDesc);
+
+  const emptyCol = '<div class="col-empty" style="display:block">Nessuna pratica</div>';
+
+  // -------------------- KANBAN A DUE COLONNE INDIPENDENTI --------------------
+  // Ogni colonna (.kcol) e' una LISTA in flex-direction:column: intestazione
+  // (.kh) + lista card (.klist) + chiusura (.kf). Le due colonne NON sono piu'
+  // interlacciate a righe, quindi quando un filtro nasconde una card (display:none)
+  // le rimanenti si RICOMPATTANO una sotto l'altra, senza buchi.
+  // L'allineamento a coppie richiesto (i-esima card visibile sx <-> i-esima
+  // visibile dx) e' ripristinato via JS da equalizeRows() dopo load / filtri /
+  // apertura-chiusura details. Colori e intestazioni delle due colonne conservati
+  // (classe todo = sinistra / doing = destra sulla .kcol).
+  function kanban(hL, arrL, hR, arrR){
+    const listL = arrL.length ? arrL.join('') : emptyCol;
+    const listR = arrR.length ? arrR.join('') : emptyCol;
+    return '<div class="kanban">'
+      +'<div class="kcol todo">'
+        +'<div class="kh todo">'+hL+'</div>'
+        +'<div class="klist">'+listL+'</div>'
+        +'<div class="kf todo"></div>'
+      +'</div>'
+      +'<div class="kcol doing">'
+        +'<div class="kh doing">'+hR+'</div>'
+        +'<div class="klist">'+listR+'</div>'
+        +'<div class="kf doing"></div>'
+      +'</div>'
+    +'</div>';
+  }
+
+  // -------------------- TAB 1: ASSEGNAZIONE ---------------------------------
+  const kanbanHtml = kanban(
+    'In entrata ('+inEntrata.length+')', inEntrata.map(p=>card(p,{mode:'active'})),
+    'Assegnate ('+assegnate.length+')', assegnate.map(p=>card(p,{mode:'assigned'}))
+  );
+
+  const doneHtml =
+    '<div class="done-wrap"><details class="done-sec">'
+      +'<summary>&#9989; Lavori conclusi ('+conclusi.length+')<span class="da">&#9656;</span></summary>'
+      +'<div class="done-body">'
+        +(conclusi.length ? conclusi.map(p=>card(p,{mode:'done'})).join('') : '<div class="docs-none">Nessun lavoro concluso.</div>')
+      +'</div>'
+    +'</details></div>';
+
+  // Sezione "Eliminate" — stessa veste della sezione Lavori conclusi (details chiuso).
+  // Card APRIBILI in sola lettura (mode 'deleted'), ciascuna con "Ripristina tra le attive".
+  const eliminateHtml =
+    '<div class="done-wrap"><details class="done-sec eliminate-sec">'
+      +'<summary>&#128465; Eliminate ('+eliminate.length+')<span class="da">&#9656;</span></summary>'
+      +'<div class="done-body">'
+        +(eliminate.length ? eliminate.map(p=>card(p,{mode:'deleted'})).join('') : '<div class="docs-none">Nessuna scheda eliminata.</div>')
+      +'</div>'
+    +'</details></div>';
+
+  const tab1 =
+    '<div id="assegnazione" class="panel active">'
+      +'<div class="ifilter">'
+        +'<label for="incassoFilterAsg">Incasso</label>'
+        +'<select id="incassoFilterAsg" onchange="filterIncasso(\'assegnazione\', this.value)">'
+          +'<option value="Tutti" selected>Tutti</option>'
+          +'<option value="Acconto 30%">Acconto 30%</option>'
+          +'<option value="Acconto 50%">Acconto 50%</option>'
+          +'<option value="Saldo">Saldo</option>'
+        +'</select>'
+        +'<label for="txtFilterAsg">Cerca</label>'
+        +'<input type="text" id="txtFilterAsg" placeholder="Cerca nome, indirizzo..." oninput="filterText(\'assegnazione\', this.value)">'
+        +'<label class="chk"><input type="checkbox" id="nosopFilterAsg" onchange="filterNoSop(\'assegnazione\', this.checked)"> Senza sopralluogo</label>'
+        +'<label class="chk"><input type="checkbox" id="noinstFilterAsg" onchange="filterNoInst(\'assegnazione\', this.checked)"> Senza installazione</label>'
+      +'</div>'
+      +'<div class="ptabs">'
+        +'<button class="ptab active" type="button" onclick="selectPtype(\'assegnazione\',\'fotovoltaico\',this)">Fotovoltaico</button>'
+        +'<button class="ptab" type="button" onclick="selectPtype(\'assegnazione\',\'termico\',this)">Termico</button>'
+      +'</div>'
+      +kanbanHtml
+      +doneHtml
+      +eliminateHtml
+    +'</div>';
+
+  // -------------------- TAB 2: PER INSTALLATORE -----------------------------
+  // Raggruppa le pratiche ASSEGNATE per installatore (assegnato_installatore_id
+  // / assegnato_a); per quelle andate a un coordinatore usa coordinatore_nome.
+  const groups = {}; const order = [];
+  assegnate.forEach(p=>{
+    let key, name;
+    if(p.assegnato_installatore_id!=null){ key='i:'+p.assegnato_installatore_id; name=p.assegnato_a||('#'+p.assegnato_installatore_id); }
+    else if(p.coordinatore_id!=null){ key='c:'+p.coordinatore_id; name=p.coordinatore_nome||('#'+p.coordinatore_id); }
+    else { key='n:'+(p.assegnato_a||p.coordinatore_nome||'na'); name=p.assegnato_a||p.coordinatore_nome||'Non assegnato'; }
+    if(!groups[key]){ groups[key]={name:name, items:[]}; order.push(key); }
+    groups[key].items.push(p);
+  });
+
+  const instBlocks = order.map(key=>{
+    const g = groups[key];
+    const n = g.items.length;
+    const notAcc = g.items.filter(p=>!p.accettata_at);
+    const acc    = g.items.filter(p=> p.accettata_at);
+    return '<div class="inst-block" data-installer="'+esc(g.name)+'">'
+      +'<div class="inst-h">'+esc(g.name)+'<span class="cnt">'+n+' '+(n===1?'pratica':'pratiche')+'</span></div>'
+      +kanban('Assegnate', notAcc.map(p=>card(p,{mode:'readonly'})), 'Accettate', acc.map(p=>card(p,{mode:'readonly'})))
+    +'</div>';
+  }).join('');
+
+  const instFilterOpts = order.map(key=>{
+    const nm = groups[key].name;
+    return '<option value="'+esc(nm)+'">'+esc(nm)+'</option>';
+  }).join('');
+
+  const tab2 =
+    '<div id="perinstallatore" class="panel">'
+      +'<div class="ifilter">'
+        +'<label for="instFilter">Filtra per installatore</label>'
+        +'<select id="instFilter" onchange="filterInstaller(this.value)">'
+          +'<option value="Tutti" selected>Tutti</option>'+instFilterOpts
+        +'</select>'
+        +'<label for="incassoFilterInst">Incasso</label>'
+        +'<select id="incassoFilterInst" onchange="filterIncasso(\'perinstallatore\', this.value)">'
+          +'<option value="Tutti" selected>Tutti</option>'
+          +'<option value="Acconto 30%">Acconto 30%</option>'
+          +'<option value="Acconto 50%">Acconto 50%</option>'
+          +'<option value="Saldo">Saldo</option>'
+        +'</select>'
+        +'<label class="chk"><input type="checkbox" id="nosopFilterInst" onchange="filterNoSop(\'perinstallatore\', this.checked)"> Senza sopralluogo</label>'
+        +'<label class="chk"><input type="checkbox" id="noinstFilterInst" onchange="filterNoInst(\'perinstallatore\', this.checked)"> Senza installazione</label>'
+      +'</div>'
+      +'<div class="ptabs">'
+        +'<button class="ptab active" type="button" onclick="selectPtype(\'perinstallatore\',\'fotovoltaico\',this)">Fotovoltaico</button>'
+        +'<button class="ptab" type="button" onclick="selectPtype(\'perinstallatore\',\'termico\',this)">Termico</button>'
+      +'</div>'
+      +(instBlocks || '<div class="docs-none">Nessuna pratica assegnata.</div>')
+    +'</div>';
+
+  // -------------------- TAB 3: CRONOLOGIA INSTALLAZIONI ---------------------
+  // Timeline degli eventi generati dalle pratiche (escluse le eliminate):
+  //   * un evento SOPRALLUOGO per ogni pratica con data_sopralluogo;
+  //   * un evento INSTALLAZIONE per OGNI data presente in date_installazione
+  //     (se una pratica ha 3 date -> 3 eventi installazione distinti, uno per
+  //      giorno; la data dell'evento e' quella specifica data).
+  // Ordinamento per data CRESCENTE (passato in alto, futuro in basso), raggruppato
+  // per GIORNO. Ogni giorno ha un'intestazione 'gg/mm/aa' con id ancorabile
+  // (id="cron-YYYY-MM-DD") per lo scroll dal DATARIO (calendario multi-mese).
+  // Ogni evento e' una card COMPATTA apribile (cronCard) con SFONDO/BORDO colorato
+  // per tipo e passato/futuro: SOPRALLUOGO rosa (grigio con BORDO ROSA se passato),
+  // INSTALLAZIONE azzurra (grigio con BORDO AZZURRO se passata). Chiave giorno
+  // 'YYYY-MM-DD' (per ordinamento/raggruppamento e per l'ancora di scroll).
+  function dayKey(v){
+    if(!v) return '';
+    let s;
+    if(v instanceof Date){
+      if(isNaN(v.getTime())) return '';
+      s = v.getFullYear()+'-'+String(v.getMonth()+1).padStart(2,'0')+'-'+String(v.getDate()).padStart(2,'0');
+    } else { s = String(v); }
+    s = s.slice(0,10);
+    const t = s.split('-');
+    if(t.length!==3 || !t[0] || !t[1] || !t[2]) return '';
+    return t[0]+'-'+t[1]+'-'+t[2];
+  }
+  // Costruisce gli eventi (un SOPRALLUOGO + una INSTALLAZIONE per ogni data) per
+  // un elenco di pratiche.
+  function buildCronEvents(list){
+    const evs = [];
+    list.forEach(p=>{
+      const dks = dayKey(p.data_sopralluogo);
+      if(dks) evs.push({p:p, tipoEvt:'sop', dayKey:dks, evtDate:p.data_sopralluogo});
+      // Un evento INSTALLAZIONE per OGNI data di date_installazione.
+      datesArr(p).forEach(dv=>{
+        const dki = dayKey(dv);
+        if(dki) evs.push({p:p, tipoEvt:'inst', dayKey:dki, evtDate:dv});
+      });
+    });
+    return evs;
+  }
+  // Raggruppa gli eventi per GIORNO in ordine CRESCENTE (passato in alto, futuro
+  // in basso). Non muta l'array in ingresso.
+  function groupCronByDay(evs){
+    const sorted = evs.slice().sort((a,b)=>{ if(a.dayKey<b.dayKey) return -1; if(a.dayKey>b.dayKey) return 1; return 0; });
+    const groups = []; const idx = {};
+    sorted.forEach(ev=>{
+      if(!idx[ev.dayKey]){ idx[ev.dayKey]={key:ev.dayKey, items:[]}; groups.push(idx[ev.dayKey]); }
+      idx[ev.dayKey].items.push(ev);
+    });
+    return groups;
+  }
+  // TIMELINE PRINCIPALE (datario + giorni): SOLO pratiche NON concluse e NON
+  // eliminate (stato_next diverso da 'lavori_conclusi' e 'eliminata').
+  const cronEvents = buildCronEvents(pratiche.filter(p=>p.stato_next!=='lavori_conclusi' && p.stato_next!=='eliminata'));
+  // SEZIONE IN FONDO — eventi delle pratiche CONCLUSE ed ELIMINATE, in due
+  // sottogruppi separati, con le STESSE card evento della timeline, ordinati per data.
+  const cronConclGroups = groupCronByDay(buildCronEvents(pratiche.filter(p=>p.stato_next==='lavori_conclusi')));
+  const cronElimGroups  = groupCronByDay(buildCronEvents(pratiche.filter(p=>p.stato_next==='eliminata')));
+  // Ordina la timeline principale per data CRESCENTE (chiave 'YYYY-MM-DD' ->
+  // confronto stringa ok): la data piu' INDIETRO nel tempo in alto, il FUTURO in basso.
+  cronEvents.sort((a,b)=>{ if(a.dayKey<b.dayKey) return -1; if(a.dayKey>b.dayKey) return 1; return 0; });
+  // Raggruppa per giorno conservando l'ordine crescente (sia i giorni sia,
+  // per stabilita' del sort, le card dentro ciascun giorno)
+  const cronGroups = []; const cronIndex = {};
+  cronEvents.forEach(ev=>{
+    if(!cronIndex[ev.dayKey]){ cronIndex[ev.dayKey]={key:ev.dayKey, items:[]}; cronGroups.push(cronIndex[ev.dayKey]); }
+    cronIndex[ev.dayKey].items.push(ev);
+  });
+
+  // ----- Chip flash per la card evento cronologia — mostrano TUTTI gli elementi
+  //       delle card normali (stessa logica/colori di chips(p): FV kWp, accumulo
+  //       con/senza + marca + kWh, colonnina, ottimizzatori, inverter +
+  //       trifase/monofase, moduli, integrato; termico: Pigma+taglia, valvole,
+  //       clima, altro; + chip tipo intervento in coda), ma in versione COMPATTA:
+  //       si limita a riusare chips(p) applicando la classe '.chip-cron' a ogni
+  //       chip. Cosi' la cronologia resta allineata alle altre viste senza
+  //       duplicare la logica.
+  function cronFlashChips(p){
+    return chips(p, 'chip-cron');
+  }
+
+  // ----- CARD EVENTO (compatta) — da CHIUSA mostra tutti i dati richiesti,
+  //       apribile per il dettaglio completo (impianto / note / documenti). ----
+  function cronCard(ev){
+    const p = ev.p;
+    const isInst = (ev.tipoEvt==='inst');
+    const tipo = (p.tipo_scheda==='termico') ? 'termico' : 'fotovoltaico';
+    const badgeLbl = isInst ? 'Installazione' : 'Sopralluogo';
+    // SFONDO/BORDO card evento — dipende dal TIPO e da passato/futuro:
+    //   SOPRALLUOGO oggi/futuro (.evt-sop)      -> sfondo rosa tenue, bordo rosa
+    //   SOPRALLUOGO passato (.evt-sop.past)      -> sfondo grigio, BORDO ROSA 1.5px
+    //   INSTALLAZIONE oggi/futuro (.evt-inst)    -> sfondo azzurro tenue, bordo azzurro
+    //   INSTALLAZIONE passato (.evt-inst.past)   -> sfondo grigio, BORDO AZZURRO 1.5px
+    // "passato" = data evento < oggi. Classe .past calcolata server-side (todayKey
+    // del nodo) per evitare il "flash"; markCronPast() la riconcilia lato client
+    // in base al fuso locale, per TUTTE le card (sopralluoghi e installazioni).
+    const isPastInit = !!(ev.dayKey && (ev.dayKey < todayKey));
+    const evtCls   = (isInst ? 'evt-inst' : 'evt-sop') + (isPastInit ? ' past' : '');
+    const evtType  = isInst ? 'inst' : 'sop';
+    const badgeCls = isInst ? 'ce-badge-inst' : 'ce-badge-sop';
+    const ind = [p.indirizzo,p.civico].filter(Boolean).join(' ');
+    const right = [p.cap,p.citta,p.provincia?('('+p.provincia+')'):''].filter(Boolean).join(' ');
+    const loc = [ind,right].filter(Boolean).join(' — ');
+    const inst = p.assegnato_a || p.coordinatore_nome || '—';
+    // CONTATTI cliente — telefono (link tel:) + email (link mailto:)
+    const tel = (p.cliente_telefono||'').replace(/\s+/g,'');
+    const contatti=[];
+    if(tel) contatti.push('<a class="lnk" href="tel:'+esc(tel)+'">&#128222; '+esc(p.cliente_telefono)+'</a>');
+    if(p.cliente_email) contatti.push('<a class="lnk" href="mailto:'+esc(p.cliente_email)+'">&#9993; '+esc(p.cliente_email)+'</a>');
+    const assegnatoTxt = [p.assegnato_a, p.coordinatore_nome].filter(Boolean).join(' ');
+    const searchText = [p.cliente, loc, assegnatoTxt].filter(Boolean).join(' ').toLowerCase();
+    return '<details class="cron-evt '+evtCls+'" data-daykey="'+esc(ev.dayKey||'')+'" data-evtype="'+evtType+'" data-incasso="'+esc(p.pagamento_livello||'nessuno')+'" data-tipo="'+tipo+'" data-search="'+esc(searchText)+'">'
+      +'<summary>'
+        +ribbon(p)
+        +ribbonPagata(p)
+        +'<span class="ce-top">'
+          +'<span class="ce-badge '+badgeCls+'">'+badgeLbl+' <span class="ce-date">'+esc(dataDM(ev.evtDate))+'</span></span>'
+          +'<span class="ce-arrow">&#9656;</span>'
+        +'</span>'
+        +'<span class="ce-nm">'+esc(p.cliente||'—')+'</span>'
+        +'<span class="ce-addr">'+esc(loc||'—')+'</span>'
+        +(contatti.length?('<span class="ce-ct">'+contatti.join('<span class="sep">·</span>')+'</span>'):'')
+        +'<span class="ce-inst">&#128100; Installatore: <strong>'+esc(inst)+'</strong></span>'
+        // Badge discrepanza reso INSIEME ai chip flash, dentro la stessa riga .ce-chips
+        // (va a capo con gli altri) e in versione compatta come i .chip-cron.
+        +'<span class="ce-chips">'+discBadge(p)+cronFlashChips(p)+'</span>'
+        +odooRefsBlock(p)
+      +'</summary>'
+      +'<div class="ce-body">'
+        +confrontoBox(p)
+        +'<div class="box impianto"><div class="box-t">Impianto</div>'+impianto(p)+'</div>'
+        +noteBox(p, true)
+        +docsBox(p)
+      +'</div>'
+    +'</details>';
+  }
+
+  // ----- DATARIO multi-mese (calendario) — mesi affiancati e scorrevoli ------
+  // Mappa giorno -> conteggi sop/inst + elenco "Cliente — tipo" (per il tooltip).
+  const cronDayMap = {};
+  cronEvents.forEach(ev=>{
+    const k = ev.dayKey;
+    if(!cronDayMap[k]) cronDayMap[k] = {sop:0, inst:0, list:[]};
+    if(ev.tipoEvt==='inst') cronDayMap[k].inst++; else cronDayMap[k].sop++;
+    cronDayMap[k].list.push((ev.p.cliente||'—')+' — '+(ev.tipoEvt==='inst'?'Installazione':'Sopralluogo'));
+  });
+  const MONTHS_IT = ['Gennaio','Febbraio','Marzo','Aprile','Maggio','Giugno','Luglio','Agosto','Settembre','Ottobre','Novembre','Dicembre'];
+  function pad2(n){ return String(n).padStart(2,'0'); }
+  // Intervallo mesi FISSO (indipendente dagli eventi): sempre da UN MESE PRIMA
+  // di quello corrente fino a DODICI MESI DOPO quello corrente -> 14 mesi totali
+  // (mese-1, mese corrente, +12). I giorni/mesi senza eventi restano vuoti ma
+  // visibili e scorrevoli; i giorni con eventi restano marcati e cliccabili.
+  // Aritmetica su indice-mese (anno*12 + mese) con normalizzazione del cambio d'anno.
+  const nowCal = new Date();
+  const todayKey = nowCal.getFullYear()+'-'+pad2(nowCal.getMonth()+1)+'-'+pad2(nowCal.getDate());
+  let cyStart, cmStart, cyEnd, cmEnd;
+  {
+    const baseIdx = nowCal.getFullYear()*12 + nowCal.getMonth(); // indice mese corrente
+    const sIdx = baseIdx - 1;   // primo mese = mese corrente - 1
+    const eIdx = baseIdx + 12;  // ultimo mese = mese corrente + 12
+    cyStart = Math.floor(sIdx/12); cmStart = sIdx%12;
+    cyEnd = Math.floor(eIdx/12); cmEnd = eIdx%12;
+  }
+  function renderCalMonth(y, m){
+    const offset = (new Date(y, m, 1).getDay()+6)%7;         // Lun=0 ... Dom=6
+    const dim = new Date(y, m+1, 0).getDate();
+    let cells = '';
+    for(let i=0;i<offset;i++) cells += '<div class="cron-cell empty"></div>';
+    for(let dnum=1;dnum<=dim;dnum++){
+      const key = y+'-'+pad2(m+1)+'-'+pad2(dnum);
+      const tdCls = (key===todayKey) ? ' today' : '';   // evidenzia leggermente OGGI
+      const info = cronDayMap[key];
+      if(info){
+        const total = info.sop + info.inst;
+        let shown = 0, sq = '';
+        for(let i=0;i<info.sop && shown<3;i++){ sq += '<span class="csq sop"></span>'; shown++; }
+        for(let i=0;i<info.inst && shown<3;i++){ sq += '<span class="csq inst"></span>'; shown++; }
+        if(total-shown>0) sq += '<span class="csq-more">+'+(total-shown)+'</span>';
+        const title = esc(info.list.join('\n'));
+        // Stringa clienti per la FASCIA hover in cima al datario: "gg/mm/aa — Cliente
+        // — Sopralluogo/Installazione · ..." (separati da " · "). Il title resta come fallback.
+        const clientsStr = esc(dataDM(key)+' — '+info.list.join(' · '));
+        cells += '<div class="cron-cell has'+tdCls+'" title="'+title+'" data-clients="'+clientsStr+'" onmouseover="cronHover(this)" onclick="cronGo(\''+key+'\')"><span class="cd-n">'+dnum+'</span><span class="cd-sq">'+sq+'</span></div>';
+      } else {
+        cells += '<div class="cron-cell'+tdCls+'"><span class="cd-n">'+dnum+'</span></div>';
+      }
+    }
+    return '<div class="cron-month">'
+      +'<div class="cron-mh">'+MONTHS_IT[m]+' '+y+'</div>'
+      +'<div class="cron-wd"><span>Lun</span><span>Mar</span><span>Mer</span><span>Gio</span><span>Ven</span><span>Sab</span><span>Dom</span></div>'
+      +'<div class="cron-cells">'+cells+'</div>'
+    +'</div>';
+  }
+  const cronMonths = [];
+  { let cy=cyStart, cm=cmStart;
+    while(cy<cyEnd || (cy===cyEnd && cm<=cmEnd)){
+      cronMonths.push(renderCalMonth(cy, cm));
+      cm++; if(cm>11){ cm=0; cy++; }
+    }
+  }
+  // FASCIA HOVER (sopra i mesi/quadrati): mostra i clienti del giorno sotto il mouse.
+  const cronHoverbar = '<div class="cron-hoverbar" id="cronHoverbar">Passa sul calendario per vedere i clienti</div>';
+  const cronCalHtml = cronMonths.length
+    ? cronHoverbar+'<div class="cron-cal-wrap">'+cronMonths.join('')+'</div>'
+    : '';
+
+  const cronBody = cronGroups.length
+    ? cronGroups.map(g=>'<div class="cron-day" id="cron-'+esc(g.key)+'">'
+        +'<div class="cron-dh">'+esc(dataDM(g.key))+'</div>'
+        +'<div class="cron-grid">'+g.items.map(cronCard).join('')+'</div>'
+      +'</div>').join('')
+    : '<div class="docs-none">Nessun evento in cronologia.</div>';
+
+  // ----- SEZIONE IN FONDO "Concluse ed eliminate" (dopo la timeline) ---------
+  // Stesse card evento (cronCard: stesso stile/colori/flash) della timeline,
+  // raggruppate per giorno in due sottogruppi "Concluse" ed "Eliminate". I giorni
+  // qui NON hanno id-ancora (il datario in alto punta solo alla timeline attiva).
+  // Le card restano .cron-evt dentro #cronologia, quindi i filtri incasso/testo/
+  // FV-Termico agiscono anche qui (via applyFilters).
+  function cronDoneDayHtml(g){
+    return '<div class="cron-day cron-day-done">'
+      +'<div class="cron-dh">'+esc(dataDM(g.key))+'</div>'
+      +'<div class="cron-grid">'+g.items.map(cronCard).join('')+'</div>'
+    +'</div>';
+  }
+  const cronConclHtml = cronConclGroups.length
+    ? '<div class="cron-sub" data-sub="concluse"><div class="cron-sub-h">&#9989; Concluse</div>'
+        +cronConclGroups.map(cronDoneDayHtml).join('')
+      +'</div>'
+    : '';
+  const cronElimHtml = cronElimGroups.length
+    ? '<div class="cron-sub" data-sub="eliminate"><div class="cron-sub-h">&#128465; Eliminate</div>'
+        +cronElimGroups.map(cronDoneDayHtml).join('')
+      +'</div>'
+    : '';
+  const cronDoneSection = (cronConclHtml || cronElimHtml)
+    ? '<div class="cron-done-section"><div class="cron-done-h">Concluse ed eliminate</div>'+cronConclHtml+cronElimHtml+'</div>'
+    : '';
+
+  const tab3 =
+    '<div id="cronologia" class="panel">'
+      +'<div class="ifilter cron-filterbar">'
+        +'<label for="incassoFilterCron">Incasso</label>'
+        +'<select id="incassoFilterCron" onchange="filterIncasso(\'cronologia\', this.value)">'
+          +'<option value="Tutti" selected>Tutti</option>'
+          +'<option value="Acconto 30%">Acconto 30%</option>'
+          +'<option value="Acconto 50%">Acconto 50%</option>'
+          +'<option value="Saldo">Saldo</option>'
+        +'</select>'
+        +'<label for="txtFilterCron">Cerca</label>'
+        +'<input type="text" id="txtFilterCron" placeholder="Cerca nome, indirizzo, installatore..." oninput="filterText(\'cronologia\', this.value)">'
+      +'</div>'
+      +cronCalHtml
+      +'<div class="ptabs">'
+        +'<button class="ptab active" type="button" onclick="selectPtype(\'cronologia\',\'fotovoltaico\',this)">Fotovoltaico</button>'
+        +'<button class="ptab" type="button" onclick="selectPtype(\'cronologia\',\'termico\',this)">Termico</button>'
+      +'</div>'
+      +'<div class="cron-list">'+cronBody+'</div>'
+      +cronDoneSection
+    +'</div>';
+
+  // -------------------- CONTATORI HEADER ------------------------------------
+  const attive = inEntrata.length + assegnate.length;
+  const cntStr = attive+' pratiche attive &middot; '+inEntrata.length+' in entrata &middot; '
+    +assegnate.length+' assegnate &middot; '+conclusi.length+' '+(conclusi.length===1?'conclusa':'concluse');
+
+  const CSS_PORTALE = `body{font-family:Manrope,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+button,input,select,textarea{font-family:inherit}
+.wrap{padding:22px 24px}
+.hdr{position:relative;background:transparent;border:0;border-bottom:1px solid #e6e8ee;border-radius:0;box-shadow:none;padding:0 0 16px;margin-bottom:16px;display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.hdr h1{font:800 26px/1.15 Manrope,sans-serif;letter-spacing:-.02em;color:#111827;margin:0}
+.hdr .sotto{font-size:13px;color:#6b7686;margin-top:4px}
+.hdr .conti{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}
+.hdr .conti span{background:#fff;border:1px solid #e2e7ee;border-radius:999px;padding:4px 11px;font-size:12px;color:#3f4a5a}
+.hdr .conti b{color:#111827;font-weight:800;margin-right:2px}
+.hdr .conti span.on{border-color:#0891b2;color:#0e7490;background:#ecfeff}
+.pmenu{position:relative;top:auto;right:auto;align-self:flex-start}
+.pmenu-btn{width:38px;height:38px;border-radius:50%;border:1px solid #e2e7ee;color:#475569;box-shadow:0 1px 2px rgba(16,24,40,.06)}
+.pmenu-btn:hover{border-color:#0891b2;color:#0891b2;background:#fff}
+.pmenu-drop{top:44px;right:0}
+.hdr .lato{display:flex;align-items:center;gap:10px;align-self:flex-start}
+.hdr .dove{font-size:12px;font-weight:700;color:#0e7490;background:#ecfeff;border:1px solid #cdeaf2;border-radius:999px;padding:6px 12px;white-space:nowrap}
+/* schede e sotto-schede come interruttori a segmenti */
+.tabs,.ptabs{display:inline-flex;gap:0;border:1px solid #e2e7ee;border-radius:10px;overflow:hidden;background:#f8fafc;margin-bottom:12px;flex-wrap:nowrap}
+.tabs{margin-right:12px}
+.tab,.ptab{border:0;border-right:1px solid #e2e7ee;border-radius:0;background:transparent;color:#6b7686;padding:8px 15px;font-size:12.5px;font-weight:600;text-transform:none;letter-spacing:0;box-shadow:none}
+.tab:last-child,.ptab:last-child{border-right:0}
+.tab:hover,.ptab:hover{background:#fff;color:#0e7490}
+.tab.active,.ptab.active,.ptab.active:hover{background:#ecfeff;color:#0891b2;box-shadow:inset 0 -2px 0 #0891b2;border-color:#e2e7ee}
+/* barra filtri e interruttori al posto delle spunte */
+.ifilter{border-color:#e2e7ee;border-radius:14px;padding:12px 16px}
+.ifilter select,.ifilter input[type=text]{border-color:#e2e7ee;border-radius:9px}
+.ifilter label.chk{gap:8px;color:#3f4a5a}
+.ifilter label.chk input[type=checkbox]{-webkit-appearance:none;appearance:none;width:30px;height:17px;border-radius:999px;background:#e2e7ee url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 13 13'%3E%3Ccircle cx='6.5' cy='6.5' r='6.5' fill='white'/%3E%3C/svg%3E") no-repeat 2px center/13px 13px;transition:background-color .15s,background-position .15s;cursor:pointer}
+.ifilter label.chk input[type=checkbox]:checked{background-color:#0891b2;background-position:15px center}
+/* fascia dei documenti da approvare */
+.attesa{background:#fff8eb;border:1px solid #f5d08a;border-left:4px solid #f59e0b;border-radius:12px;padding:12px 16px}
+.att-t{font-size:12.5px;margin-bottom:8px}
+.att-v{height:28px;padding:0 6px 0 12px;border-color:#f5d08a;border-radius:999px;font-size:11.5px;font-weight:700}
+.att-n{min-width:18px;height:18px;border-radius:999px;background:#f59e0b;color:#fff;font-size:10px;display:inline-flex;align-items:center;justify-content:center}
+/* colonne e schede pratica */
+.kcol{border-radius:14px;padding:4px}
+.kcol.todo{background:#f3f4f6}
+.kcol.doing{background:#e8f4f8;border-color:#d4ecf3}
+.det{border-radius:12px}
+/* tema scuro: segue il portale (versione notturna) */
+html[data-tema="scuro"]{filter:invert(.92) hue-rotate(180deg);background:#0b0f14}
+html[data-tema="scuro"] img,html[data-tema="scuro"] video,html[data-tema="scuro"] iframe{filter:invert(1) hue-rotate(180deg)}
+`;
+  // -------------------- CSS (copiato FEDELMENTE dal mockup approvato) --------
+  const CSS = `*{box-sizing:border-box}
+body{margin:0;background:#f5f6f8;color:#1f2330;font:13px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+.wrap{max-width:1500px;margin:0 auto;padding:14px}
+
+/* HEADER BIANCO — bordo inferiore ciano */
+.hdr{position:relative;background:#ffffff;border:1px solid #e6e8ee;border-bottom:2px solid #0891b2;border-radius:14px;padding:14px 18px;display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:14px;box-shadow:0 2px 10px rgba(8,145,178,.08)}
+.brand{display:flex;align-items:center;gap:12px}
+.brand img{height:30px;display:block}
+.brand .ti{color:#0e7490;font-weight:800;font-size:21px;letter-spacing:.4px}
+.brand .ti small{display:block;font-weight:500;font-size:12px;letter-spacing:.02em;color:#0891b2;margin-top:1px}
+.hdr .sub{text-align:right;color:#0e7490;padding-right:48px}
+.hdr .sub .u{font-weight:700;font-size:14px}
+.hdr .sub .cnt{font-size:12px;color:#0891b2}
+
+/* MENU "APRI PORTALI" (hamburger, alto a destra nell'header) */
+.pmenu{position:absolute;top:12px;right:16px;z-index:30}
+.pmenu-btn{width:38px;height:34px;display:flex;align-items:center;justify-content:center;background:#fff;border:1px solid #cdeaf2;border-radius:9px;color:#0891b2;font-size:18px;line-height:1;cursor:pointer;box-shadow:0 1px 4px rgba(8,145,178,.12)}
+.pmenu-btn:hover{background:#ecfeff;border-color:#0891b2}
+.pmenu-drop{position:absolute;top:40px;right:0;min-width:250px;max-height:72vh;overflow-y:auto;background:#fff;border:1px solid #e6e8ee;border-radius:12px;box-shadow:0 10px 30px rgba(15,23,42,.18);padding:8px;display:none}
+.pmenu-drop.open{display:block}
+.pmenu-sec{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.05em;color:#0e7490;padding:8px 10px 4px}
+.pmenu-div{height:1px;background:#e6e8ee;margin:6px 4px}
+.pmenu-item{display:block;padding:8px 10px;border-radius:8px;font-size:13px;font-weight:600;color:#1f2330;text-decoration:none}
+.pmenu-item:hover{background:#ecfeff;color:#0e7490}
+.pmenu-item.dis{color:#94a3b8;font-weight:500;pointer-events:none}
+.pmenu-empty{padding:8px 10px;font-size:12px;color:#94a3b8;font-style:italic}
+
+/* SOTTO-SCHEDE FOTOVOLTAICO / TERMICO (pill per-tab, sopra il kanban) */
+.ptabs{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+.ptab{padding:7px 20px;border:1px solid #cdeaf2;background:#fff;color:#0e7490;border-radius:999px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;cursor:pointer}
+.ptab:hover{background:#ecfeff}
+.ptab.active{background:#0891b2;color:#fff;border-color:#0891b2;box-shadow:0 1px 5px rgba(8,145,178,.25)}
+.ptab.active:hover{background:#0891b2}
+
+/* TABS */
+.tabs{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap}
+.tab{padding:9px 16px;border:1px solid #d7dbe3;background:#fff;color:#475569;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer}
+.tab.active{background:#0891b2;color:#fff;border-color:#0891b2;box-shadow:0 1px 5px rgba(8,145,178,.25)}
+.panel{display:none}
+.panel.active{display:block}
+
+/* LEGENDA */
+.legend{display:flex;flex-wrap:wrap;gap:12px;align-items:center;background:#fff;border:1px solid #e6e8ee;border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#475569}
+.legend b{color:#1f2330;font-weight:700;margin-right:2px}
+.leg{display:inline-flex;align-items:center;gap:6px}
+.dot{width:12px;height:12px;border-radius:999px;display:inline-block}
+.dot.d30{background:#f59e0b}.dot.d50{background:#16a34a}.dot.dsaldo{background:#5A7184}.dot.ddisc{background:#dc2626}
+
+/* KANBAN — DUE COLONNE INDIPENDENTI. Ogni .kcol e' una lista verticale
+   (intestazione .kh + lista card .klist + chiusura .kf). Nascondere una card
+   (display:none) ricompatta le altre senza lasciare buchi. L'allineamento a
+   coppie e' ripristinato via JS (equalizeRows). */
+.kanban{display:grid;grid-template-columns:1fr 1fr;column-gap:14px;align-items:start}
+.kcol{display:flex;flex-direction:column;min-width:0;border-radius:12px}
+.kcol.todo{background:#eef0f3}
+.kcol.doing{background:#e6f2f7;border:1px solid #cdeaf2}
+/* intestazioni di colonna */
+.kh{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#0e7490;padding:10px;border-radius:12px 12px 0 0;display:flex;align-items:center;flex-wrap:wrap;gap:4px}
+.kh.todo{color:#6b7280}
+/* lista card della colonna */
+.klist{display:flex;flex-direction:column;padding:0 10px;min-width:0}
+/* chiusura colonna (arrotonda in basso) */
+.kf{height:10px}
+/* legacy (non piu' usate dal layout, mantenute per compatibilita') */
+.col{border-radius:12px;padding:10px;min-height:120px}
+.col.todo{background:#eef0f3;border:1px solid transparent}
+.col.doing{background:#e6f2f7;border:1px solid #cdeaf2}
+.col-h{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#0e7490;margin:2px 4px 10px;display:flex;align-items:center;flex-wrap:wrap;gap:4px}
+.col.todo .col-h{color:#6b7280}
+.col-empty{display:none;color:#94a3b8;font-size:12px;font-style:italic;text-align:center;padding:14px 6px;border:1px dashed #d7dbe3;border-radius:8px;background:#fff}
+
+/* CARD APRIBILE — più compatta */
+.det{position:relative;background:#fff;border:1px solid #e6e8ee;border-radius:11px;margin-bottom:8px;overflow:hidden}
+.col.todo .det,.kcol.todo .det{background:#fff9e0;border-color:#f3d98a;box-shadow:0 1px 5px rgba(245,158,11,.10)}
+.col.todo .det .body,.kcol.todo .det .body{background:#fffdf4}
+.col.doing .det,.kcol.doing .det{background:#fff;border-color:#bae6f2;box-shadow:0 1px 4px rgba(8,145,178,.10)}
+.col.doing .det .body,.kcol.doing .det .body{background:#fbfcfd}
+.det.rej{border:2px solid #dc2626;box-shadow:0 1px 6px rgba(220,38,38,.14)}
+
+/* FASCETTA INCASSATO — solo testo, il COLORE indica la fase */
+.paid-rib{position:absolute;top:0;left:0;color:#fff;font-size:9px;font-weight:800;letter-spacing:.06em;padding:3px 11px;border-radius:0 0 8px 0;z-index:3}
+.paid-rib.r-30{background:#f59e0b}    /* acconto 30% */
+.paid-rib.r-50{background:#16a34a}    /* acconto 50% */
+.paid-rib.r-saldo{background:#5A7184} /* saldo */
+
+/* FASCETTA PAGATA — Next ha pagato la fattura dell'installatore (angolare, in basso a destra) */
+.pagata-rib{position:absolute;bottom:0;right:0;color:#fff;font-size:9px;font-weight:800;letter-spacing:.06em;padding:3px 12px;border-radius:8px 0 0 0;background:#16a34a;z-index:3}
+
+/* SUMMARY — layout a colonna, compatto; l'altezza a card chiusa e' data dal
+   CONTENUTO (nessun min-height fisso -> niente spazio morto sotto i controlli).
+   Il padding inferiore di 10px fa da margine minimo sotto la riga controlli.
+   L'uniformita' delle due card affiancate resta garantita da equalizeRows(). */
+summary{list-style:none;cursor:pointer;position:relative;padding:20px 12px 10px 12px;display:flex;flex-direction:column;gap:5px}
+summary::-webkit-details-marker{display:none}
+details.det:not([open])>summary{min-height:0}
+/* Card SENZA controlli (readonly/done/deleted/per-installatore): altezza al
+   contenuto utile (gia' compatte) */
+details.det.ro:not([open])>summary{min-height:0}
+.arrow{position:absolute;right:11px;top:11px;color:#94a3b8;font-size:16px;transition:transform .15s;z-index:1}
+details[open] .arrow{transform:rotate(90deg);color:#0891b2}
+.main{min-width:0;padding-right:412px}
+.nm{font-weight:700;font-size:13px;display:block;line-height:1.2}
+.dt{display:block;font-size:11px;color:#6b7280;margin-top:1px}
+.ct{display:block;font-size:11px;margin-top:2px}
+.lnk{color:#0891b2;text-decoration:none}.lnk:hover{text-decoration:underline}
+.sep{color:#cbd5e1;margin:0 6px}
+
+/* FASCIA ALTA A DESTRA — date in formato FLASH/CHIP (Sopralluogo | Installazione) + badge stato all'estrema destra */
+/* Fascia flash (dx -> sx): [badge Accettata] angolo, [Installazione], [Sopralluogo].
+   Il badge e' l'ultimo elemento e resta pinnato nell'angolo (nowrap sul contenitore
+   esterno); le chip vivono in .tr-chips a sinistra del badge. */
+.tr{position:absolute;top:9px;right:28px;z-index:2;display:flex;flex-direction:row;flex-wrap:nowrap;align-items:flex-start;justify-content:flex-end;gap:6px;max-width:412px}
+/* Chip Sopralluogo e Installazione AFFIANCATE: sop a sx, inst a dx, badge Accettata all'angolo.
+   Le date includono l'ANNO (gg/mm/aa): i chip NON devono mai essere compressi ne' tagliati,
+   quindi .tr-chips va a capo (flex-wrap) invece di stringere i chip, e ogni .tr-col e'
+   flex:0 0 auto (larghezza = contenuto) con padding orizzontale ampio. */
+.tr-chips{display:flex;flex-flow:row wrap;align-items:flex-start;justify-content:flex-end;gap:5px 6px;min-width:0;flex:0 1 auto}
+.tr-col{display:inline-flex;flex-direction:row;align-items:center;flex-wrap:nowrap;gap:2px 6px;border-radius:999px;padding:3px 12px;border:1px solid;flex:0 0 auto;max-width:none;overflow:visible;white-space:nowrap}
+.tr-col.c-inst{align-items:flex-start}
+.tr-col.c-sop{background:#ecfbff;border-color:#b6e6f2}
+.tr-col.c-inst{background:#f0fdf4;border-color:#bbf7d0}
+.tr-lbl{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.02em;line-height:1.2;white-space:nowrap;flex:0 0 auto}
+.tr-col.c-sop .tr-lbl{color:#0e7490}
+.tr-col.c-inst .tr-lbl{color:#166534}
+.tr-vals{display:inline-flex;flex-direction:column;align-items:flex-start;line-height:1.2;flex:0 0 auto;min-width:0}
+/* Valore data (gg/mm/aa): mai spezzato, mai troncato (niente max-width/ellissi) */
+.tr-val{font-size:11px;font-weight:400;color:#1f2330;line-height:1.2;white-space:nowrap;flex:0 0 auto;max-width:none;overflow:visible;text-overflow:clip}
+.badge{font-size:10px;font-weight:800;letter-spacing:.03em;padding:3px 9px;border-radius:999px;white-space:nowrap;text-transform:uppercase;flex:none;align-self:flex-start}
+.badge.b-acc{background:#f0fdf4;color:#166534;border:1px solid #bbf7d0}
+
+/* NOTA IN BASSO (es. pratica rifiutata) — banda full-width in fondo alla card */
+.rejbar{background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;border-radius:8px;padding:7px 11px;font-size:11px;font-weight:700;margin-top:11px}
+
+/* INFO (chip + discrepanza) — riserva lo spazio, spinge i controlli in basso */
+.info{flex:1 1 auto;overflow:hidden;display:flex;flex-direction:column;gap:5px}
+
+/* CHIP FV */
+.chips{display:flex;flex-wrap:wrap;align-content:flex-start;gap:5px;margin-top:4px}
+.chip{font-size:10px;font-weight:600;padding:2px 8px;border-radius:999px;border:1px solid;white-space:nowrap}
+.c-fv{background:#ecfeff;color:#0e7490;border-color:#a5f3fc}
+.c-ok{background:#f0fdf4;color:#166534;border-color:#bbf7d0}
+.c-no{background:#fef2f2;color:#b91c1c;border-color:#fecaca}
+.c-amp{background:#faf5ff;color:#6d28d9;border-color:#e9d5ff}
+.c-neutral{background:#f1f5f9;color:#475569;border-color:#e2e8f0}
+/* CHIP TERMICO — tinta calda (arancio/rosso), distinta dai chip FV */
+.c-term{background:#fff4ed;color:#c2410c;border-color:#fed7aa}
+/* CHIP TIPO INTERVENTO — colore = tipo: Nuovo=verde, Ampliamento=arancio,
+   Rifacimento=rosso, Aggiunta accumulo=viola */
+.ti-nuovo{background:#f0fdf4;color:#166534;border-color:#bbf7d0}
+.ti-ampl{background:#fff7ed;color:#c2410c;border-color:#fed7aa}
+.ti-rifac{background:#fef2f2;color:#b91c1c;border-color:#fecaca}
+.ti-accumulo{background:#faf5ff;color:#6d28d9;border-color:#e9d5ff}
+
+/* BADGE DISCREPANZA */
+.disc{display:inline-block;align-self:flex-start;background:#fef2f2;color:#dc2626;border:1px solid #fecaca;font-size:10px;font-weight:700;padding:2px 8px;border-radius:8px;margin-top:2px}
+
+/* BOX "CONFRONTO ODOO <-> CONTRATTO" (dettaglio all'apertura della card) */
+.box.confronto{background:#fff;border-color:#f3d0d0}
+.box.confronto .box-t{color:#dc2626}
+.box.confronto .cfr-sub{font-weight:500;text-transform:none;letter-spacing:0;color:#94a3b8}
+.cfr-row{display:grid;grid-template-columns:1.1fr 1fr 1fr;gap:8px;padding:5px 9px;border-radius:7px;font-size:12px;align-items:center;margin-bottom:4px}
+.cfr-row:last-child{margin-bottom:0}
+.cfr-row.cfr-head{font-weight:700;text-transform:uppercase;font-size:9px;letter-spacing:.04em;color:#64748b;background:#f8fafc;border:1px solid #eef0f4}
+.cfr-row.ok{background:#f0fdf4;border:1px solid #cde6d5}
+.cfr-row.ko{background:#fef2f2;border:1px solid #fbcccc}
+/* Voce NON bloccante (WiFi): neutra, mai in rosso anche se diverge */
+.cfr-row.nb{background:#f8fafc;border:1px solid #e2e8f0}
+.cfr-row.nb .cf-campo{color:#64748b}
+.cfr-row.nb .cf-odoo{color:#64748b}
+.cfr-row .cf-nb{font-weight:500;font-size:9px;text-transform:uppercase;letter-spacing:.03em;color:#94a3b8}
+.cfr-row .cf-campo{font-weight:600;color:#334155}
+.cfr-row.ok .cf-odoo{color:#166534;font-weight:600}
+.cfr-row.ko .cf-campo{color:#b91c1c}
+.cfr-row.ko .cf-odoo{color:#dc2626;font-weight:700}
+.cfr-row .cf-contr{color:#475569}
+
+/* CORPO CARD */
+.body{border-top:1px solid #eef0f4;padding:12px 14px}
+
+/* CONTROLLI ASSEGNAZIONE — compatti, sempre visibili, in una riga */
+.ctrls{width:100%;margin-top:8px;padding-top:8px;border-top:1px dashed #d7dbe3;display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end}
+.ctrls label{display:flex;flex-direction:column;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.02em;color:#64748b;gap:2px}
+.ctrls select{height:28px;min-width:148px;padding:3px 7px;border:1px solid #d7dbe3;border-radius:6px;font-size:12px;background:#fff;color:#1f2330}
+.act{height:28px;padding:4px 10px;border:1px solid #0891b2;background:#0891b2;color:#fff;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;line-height:1}
+.act.primary{background:#16a34a;border-color:#16a34a}
+.act.ghost{background:#fff;color:#0891b2}
+/* PULSANTE ODOO — bordo e testo viola scuro, sfondo bianco */
+.act.odoo{background:#fff;color:#714B67;border:1px solid #714B67}
+.act.odoo:hover{background:#f6eff4}
+
+/* RIFERIMENTI ODOO (OV / OA installazione) — BLOCCO UNICO in fondo alla card, in
+   basso a destra, appena sopra la fascetta .pagata-rib. Posizione IDENTICA in ogni
+   vista/modalita'. .info (flex:1 1 auto) lo spinge in fondo al summary; sulle card
+   compatte (readonly, senza min-height) resta subito sotto il contenuto. */
+.orefs{align-self:flex-end;justify-content:flex-end;display:flex;flex-wrap:wrap;gap:4px 12px;font-size:10px;color:#94a3b8;line-height:1.3;max-width:100%;margin-top:6px}
+/* Fattura PAGATA: alza il blocco per non sovrapporsi alla fascetta verde d'angolo
+   (vale per le card compatte .ro dove gli orefs restano in flusso) */
+.orefs.orefs-lift{margin-bottom:20px}
+/* CARD CON CONTROLLI (vista Assegnazione: active/assigned, cioe' NON .ro):
+   gli orefs sono ancorati in basso a destra, sulla STESSA FASCIA della riga
+   controlli (accanto al pulsante "Crea ordine in Odoo"), non piu' in flusso sotto.
+   La riga controlli riserva un po' di spazio a destra cosi' i combo/pulsante non
+   ci finiscono sotto. */
+details.det:not(.ro) .ctrls{padding-right:150px}
+details.det:not(.ro) .orefs.orefs-card{position:absolute;right:12px;bottom:16px;margin:0;justify-content:flex-end;text-align:right;max-width:340px}
+/* Fattura PAGATA: solleva gli orefs sopra la fascetta verde d'angolo (.pagata-rib) */
+details.det:not(.ro) .orefs.orefs-card.orefs-lift{bottom:22px;margin:0}
+.orefs .oref b{color:#64748b;font-weight:600}
+/* OV / OA cliccabili verso Odoo — link in tenue */
+.orefs a.oref{color:#94a3b8;text-decoration:none}
+.orefs a.oref:hover{text-decoration:underline;color:#0e7490}
+.orefs a.oref:hover b{color:#0e7490}
+
+/* SEZIONE DATE editabile (Sopralluogo / Installazione) — stile area installatore */
+.box.sop{background:#ecfbff;border-color:#b6e6f2}.box.sop .box-t{color:#0e7490}
+.box.inst{background:#f0fdf4;border-color:#bbf7d0}.box.inst .box-t{color:#166534}
+.sopgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:end}
+.sopgrid label{display:flex;flex-direction:column;font-size:11px;color:#6b7280;gap:4px;text-transform:none;letter-spacing:0;font-weight:400}
+.sopgrid input,.sopgrid select{height:34px;width:100%;padding:6px 9px;border:1px solid #d7dbe3;border-radius:8px;font-size:13px;background:#fff;color:#1f2330}
+.sop-actions{margin-top:10px}
+.frm{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end}
+.dates{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}
+.dtag{display:inline-flex;align-items:center;gap:6px;background:#fff;border:1px solid #bbf7d0;border-radius:8px;padding:6px 8px;font-size:13px}
+.dtag input{border:none;background:transparent;font-size:13px;padding:0;width:130px}
+.dtag .x{border:none;background:#fee2e2;color:#b91c1c;border-radius:6px;width:20px;height:20px;cursor:pointer;font-weight:700;line-height:1}
+.dnote{color:#166534;font-size:13px}
+.msg{font-size:12px;margin-top:2px;min-height:14px}.msg.ok{color:#166534}.msg.err{color:#b91c1c}
+
+/* BOX SEZIONI INTERNE */
+.box{border-radius:10px;padding:11px 13px;margin-bottom:11px;border:1px solid #eef0f4}
+.box-t{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;margin-bottom:9px}
+.box.impianto{background:#fff}.box.impianto .box-t{color:#64748b}
+.box.docs{background:#fff}.box.docs .box-t{color:#6d28d9}
+/* il titolo del box documenti regge ora anche il pulsante, che va a destra */
+.box.docs .box-t{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.vedidoc{font-size:10px;font-weight:700;text-transform:none;letter-spacing:0;color:#6d28d9;text-decoration:none;border:1px solid #d6cdf3;background:#faf9ff;border-radius:5px;padding:3px 8px;white-space:nowrap}
+.vedidoc:hover{background:#f1ecfe}
+/* pallino ambra: la pratica ha documenti caricati e non ancora approvati */
+.vedidoc.attesa{border-color:#e8a33d;background:#fff8ec;color:#a3691a}
+.vedidoc.attesa:hover{background:#fdefd8}
+.vedidoc .pall{display:inline-block;width:7px;height:7px;border-radius:50%;background:#e8a33d;margin-right:5px;vertical-align:middle}
+/* fascia in cima: cosa aspetta di essere approvato */
+.attesa{background:#fff8ec;border:1px solid #f0c98a;border-left:4px solid #e8a33d;border-radius:10px;padding:12px 16px;margin:0 0 14px}
+.att-t{font-size:13.5px;color:#8a5a12;font-weight:600;margin-bottom:9px}
+.att-l{display:flex;flex-wrap:wrap;gap:8px}
+.att-v{display:inline-flex;align-items:center;gap:7px;background:#fff;border:1px solid #f0c98a;border-radius:20px;padding:5px 6px 5px 13px;font-size:12.5px;font-weight:600;color:#8a5a12;text-decoration:none}
+.att-v:hover{background:#fdefd8}
+.att-n{background:#e8a33d;color:#fff;border-radius:12px;padding:1px 8px;font-size:11.5px}
+.att-v.dop{border-color:#d9534f}
+.att-d{background:#fdf1f0;color:#8a2f2a;border:1px solid #f0c3c0;border-radius:10px;padding:0 6px;font-size:10.5px;margin-left:-3px}
+.box.up{background:#faf9ff;border-color:#e7e2f7}.box.up .box-t{color:#6d28d9}
+.box.layout{background:#fff}.box.layout .box-t{color:#0e7490}
+/* BOX NOTE — Note contratto (RO scrollabile) + Note per l'installatore (editabile) */
+.box.notebox{background:#fff}.box.notebox .box-t{color:#64748b}
+.notebox .nlbl{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#64748b;margin-bottom:5px}
+.notebox .nsub{font-weight:500;text-transform:none;letter-spacing:0;color:#94a3b8}
+/* Campi note con SFONDO TENUE coerente con i tile della sezione Impianto (#f8fdfe / #dbeef2) */
+.notebox .notero{max-height:120px;overflow-y:auto;font-size:12.5px;color:#475569;line-height:1.55;background:#f8fdfe;border:1px solid #dbeef2;border-radius:8px;padding:8px 10px}
+.notebox .noteempty{font-size:12px;color:#94a3b8;font-style:italic;background:#f8fdfe;border:1px solid #dbeef2;border-radius:8px;padding:8px 10px}
+.notebox .noteinst{width:100%;min-height:80px;resize:vertical;font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:8px 10px;border:1px solid #dbeef2;border-radius:8px;background:#f8fdfe;color:#1f2330}
+.notebox .note-actions{margin-top:8px;display:flex;justify-content:flex-end}
+/* BOX NOTE — VARIANTE TERMICO: tinta calda tenue (arancio) su box e campi note */
+.box.notebox.term{background:#fff7ed;border-color:#fed7aa}
+.notebox.term .notero{background:#fff2e8;border-color:#fed7aa}
+.notebox.term .noteempty{background:#fff2e8;border-color:#fed7aa}
+.notebox.term .noteinst{background:#fff2e8;border-color:#fed7aa}
+
+/* LAYOUT E SCHEMA UNIFILARE — riquadro unico compatto */
+.lay-one{display:flex;align-items:center;gap:14px;border:1px solid #dbeef2;border-radius:9px;background:#f8fafc;padding:10px 14px}
+.lay-one .thumb{width:60px;height:60px;flex:none;border:1px solid #e2e8f0;border-radius:6px;background:#fff;display:flex;align-items:center;justify-content:center;overflow:hidden;padding:5px}
+.lay-one .thumb svg{width:100%;height:100%;display:block}
+.lay-one .meta{flex:1;min-width:0}
+.lay-one .meta .t{font-size:13px;font-weight:700;color:#0e7490}
+.lay-one .meta .s{font-size:11px;color:#94a3b8;margin-top:2px}
+.lay-one .pdf{flex:none;font-size:12px;font-weight:600;color:#0891b2;text-decoration:none;border:1px solid #a5d8e6;background:#ecfeff;border-radius:7px;padding:6px 11px;white-space:nowrap}
+.lay-one .pdf:hover{background:#d9f4fb}
+/* Stato "non disponibile" — grafica in tenue, distinta dal link attivo */
+.lay-one.lay-none{background:#f8fafc;border-style:dashed;border-color:#e2e8f0}
+.lay-one .thumb-none{opacity:.4;filter:grayscale(1)}
+.lay-one.lay-none .meta .t{color:#94a3b8}
+.lay-one .pdf-none{flex:none;font-size:12px;font-weight:600;color:#94a3b8;border:1px solid #e2e8f0;background:#f1f5f9;border-radius:7px;padding:6px 11px;white-space:nowrap}
+
+/* IMPIANTO — griglia a quadranti */
+.imp-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:stretch}
+.itile{background:#f8fdfe;border:1px solid #dbeef2;border-radius:9px;padding:7px 10px;display:flex;flex-direction:column;gap:3px}
+.itile.full{grid-column:1 / -1;background:#f4fbfc}
+.itile .il{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#0e7490;display:flex;align-items:center;gap:6px}
+.itile .il .ico{width:16px;height:16px;border-radius:5px;display:inline-flex;align-items:center;justify-content:center;font-size:10px;background:#cff2f9;color:#0e7490;flex:none}
+.itile .il .ico.g{background:#dcfce7;color:#15803d}
+.itile .il .ico.p{background:#ede9fe;color:#6d28d9}
+.itile .il .ico.o{background:#fef3c7;color:#b45309}
+.itile .il .ico.r{background:#ffe4d1;color:#c2410c}
+/* TILE IMPIANTO TERMICO — tinta calda coerente col chip .c-term */
+.imp-term{margin-top:8px}
+.itile.term{background:#fff7f2;border-color:#fed7aa}
+.itile.term .il{color:#c2410c}
+.tcomps{display:flex;flex-wrap:wrap;gap:6px}
+.tcomps .tcomp{display:inline-block;background:#fff;border:1px solid #fed7aa;color:#9a3412;border-radius:999px;padding:2px 9px;font-size:11px;font-weight:600}
+.imp-empty{color:#94a3b8;font-size:12px;font-style:italic}
+.itile .iv{font-size:13px;font-weight:600;color:#1f2330}
+.itile .iv.light{font-weight:500;color:#334155}
+.itile .iv .muted{color:#94a3b8;font-weight:500;font-size:12px}
+.iv .yes{color:#15803d;font-weight:700}
+.iv .no{color:#b91c1c;font-weight:700}
+.itile.note .il{color:#64748b}
+.itile.note .il .ico{background:#e2e8f0;color:#64748b}
+.itile.note .nbody{max-height:90px;overflow-y:auto;font-size:12.5px;font-weight:400;color:#475569;line-height:1.55;padding-right:6px;margin-top:2px}
+.itile.note .nbody p{margin:0 0 6px}
+.itile.note .nbody p:last-child{margin-bottom:0}
+
+/* DOCUMENTI CARICATI — tessere con link Scarica
+   ALLINEATO AL PORTALE INSTALLATORE (31/07): tessera 92px, etichetta 10px, riga
+   secondaria 9px, pulsante Scarica ancorato al margine INFERIORE (margin-top:auto)
+   con tessere di pari altezza nella riga (align-items:stretch). L'icona non e' piu
+   un'emoji ma un riquadrino con l'ESTENSIONE del file (.ext). */
+.docs-group{margin-top:6px}
+.docs-group + .docs-group{margin-top:14px}
+.docs-gt{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#6d28d9;margin-bottom:8px}
+.docs-grid{display:flex;flex-wrap:wrap;gap:6px;align-items:stretch}
+.doctile{width:92px;min-width:0;max-width:92px;overflow:hidden;box-sizing:border-box;background:#fff;border:1px solid #e7e2f7;border-radius:8px;padding:7px 5px 6px;display:flex;flex-direction:column;align-items:center;gap:3px;text-align:center;text-decoration:none}
+/* .ext = riquadrino con l'estensione: PDF rosso tenue, immagini azzurro tenue, resto grigio */
+.doctile .ext{display:inline-block;font-size:9px;font-weight:700;letter-spacing:.03em;border-radius:4px;padding:2px 6px;line-height:1.3}
+.doctile .ext.pdf{background:#fef2f2;color:#b91c1c}
+.doctile .ext.img{background:#eff6ff;color:#1e40af}
+.doctile .ext.oth{background:#f1f5f9;color:#475569}
+/* etichetta: le parole NON vanno mai spezzate a meta (word-break normale, niente hyphens) */
+.doctile .dl{font-size:10px;line-height:1.2;color:#475569;font-weight:600;width:100%;overflow-wrap:break-word;word-break:normal;hyphens:none}
+/* .dsub = riga secondaria (ruolo: Proprietario / Cointestatario), solo documenti cliente.
+   Il margin-top negativo compensa il gap:3px del .doctile, cosi' resta "attaccata" all'etichetta. */
+.doctile .dsub{width:100%;margin-top:-1px;margin-bottom:2px;font-size:9px;line-height:1.15;color:#9a8fc0;font-weight:600;overflow-wrap:break-word;word-break:normal}
+/* .dget = pulsante di scaricamento: testo piccolo ma AREA CLICCABILE comoda anche
+   da telefono (min-height/min-width 28px, inline-flex che centra l'etichetta). */
+.doctile .dget{margin-top:auto;font-size:10px;font-weight:700;color:#0891b2;text-decoration:none;border:1px solid #a5d8e6;background:#ecfeff;border-radius:6px;padding:2px 6px;min-height:28px;min-width:28px;max-width:100%;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;white-space:nowrap}
+.doctile .dget:hover{background:#d9f4fb}
+/* ===== COLORE PER SEZIONE (31/07, set "C" scelto da Sante) =====
+   La classe di tinta sta sul CONTENITORE .docs-group (vedi docsGroup()): colora
+   titolo, sfondo/bordo/testo delle tessere e la riga secondaria. Il riquadrino
+   dell'estensione (.ext) NON cambia: resta rosso per i PDF, azzurro per le immagini.
+     g-cli = cliente      azzurro  testo #0e7490 su #ecfbff, bordo #b6e6f2, sub #3f92a8
+     g-sop = sopralluogo  ambra    testo #b45309 su #fff7ed, bordo #fed7aa, sub #c98a3f
+     g-fin = fine_lavori  verde    testo #166534 su #f0fdf4, bordo #bbf7d0, sub #4a8f63 */
+.docs-group.g-cli .docs-gt{color:#0e7490}
+.docs-group.g-cli .doctile{background:#ecfbff;border-color:#b6e6f2}
+.docs-group.g-cli .doctile .dl{color:#0e7490}
+.docs-group.g-cli .doctile .dsub{color:#3f92a8}
+.docs-group.g-sop .docs-gt{color:#b45309}
+.docs-group.g-sop .doctile{background:#fff7ed;border-color:#fed7aa}
+.docs-group.g-sop .doctile .dl{color:#b45309}
+.docs-group.g-sop .doctile .dsub{color:#c98a3f}
+.docs-group.g-fin .docs-gt{color:#166534}
+.docs-group.g-fin .doctile{background:#f0fdf4;border-color:#bbf7d0}
+.docs-group.g-fin .doctile .dl{color:#166534}
+.docs-group.g-fin .doctile .dsub{color:#4a8f63}
+/* Sul fondo colorato il pulsante Scarica va a fondo BIANCO per staccare bene
+   (il suo #ecfeff sparirebbe sull'azzurro della sezione cliente). */
+.docs-group.g-cli .doctile .dget,.docs-group.g-sop .doctile .dget,.docs-group.g-fin .doctile .dget{background:#fff}
+.docs-none{color:#9a8fc0;font-size:12px;font-style:italic}
+
+/* AREA UPLOAD NEXT */
+.drop{border:2px dashed #c4b5f0;border-radius:12px;min-height:130px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;text-align:center;color:#7c6bb0;font-size:14px;cursor:pointer;background:#fff;padding:20px}
+.drop:hover{background:#f7f4ff;border-color:#a78bda}
+.drop .ic{font-size:30px;line-height:1}
+.drop .big{font-weight:600;color:#6d28d9}
+.drop .sm{font-size:12px;color:#9a8fc0}
+
+/* ===== TAB 2 — PER INSTALLATORE ===== */
+.ifilter{display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:#fff;border:1px solid #e6e8ee;border-radius:10px;padding:10px 14px;margin-bottom:16px}
+.ifilter label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;color:#64748b}
+.ifilter select{height:36px;min-width:220px;padding:6px 10px;border:1px solid #d7dbe3;border-radius:8px;font-size:14px;background:#fff;color:#1f2330}
+.ifilter input[type=text]{height:36px;min-width:240px;flex:1 1 240px;padding:6px 12px;border:1px solid #d7dbe3;border-radius:8px;font-size:14px;background:#fff;color:#1f2330}
+.ifilter input[type=text]:focus{outline:none;border-color:#0891b2;box-shadow:0 0 0 2px rgba(8,145,178,.15)}
+/* Toggle "Senza sopralluogo" / "Senza installazione" — checkbox in linea nella barra filtri */
+.ifilter label.chk{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;text-transform:none;letter-spacing:0;color:#475569;cursor:pointer;white-space:nowrap}
+.ifilter label.chk input[type=checkbox]{width:16px;height:16px;min-width:0;flex:none;margin:0;padding:0;cursor:pointer;accent-color:#0891b2}
+
+.inst-block{margin-bottom:20px}
+.inst-h{display:flex;align-items:center;gap:10px;font-size:15px;font-weight:800;color:#0e7490;letter-spacing:.02em;background:#fff;border:1px solid #e6e8ee;border-left:4px solid #0891b2;border-radius:10px;padding:10px 15px;margin-bottom:11px;box-shadow:0 1px 5px rgba(8,145,178,.06)}
+.inst-h .cnt{font-size:11px;font-weight:700;color:#0891b2;background:#ecfeff;border:1px solid #a5f3fc;border-radius:999px;padding:2px 9px}
+
+/* ===== LAVORI CONCLUSI ===== */
+.done-wrap{margin-top:18px}
+details.done-sec{background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden}
+details.done-sec>summary{list-style:none;cursor:pointer;padding:13px 18px;display:flex;flex-direction:row;align-items:center;gap:10px;height:auto;background:#f8fafc;font-weight:800;color:#334155}
+details.done-sec>summary::-webkit-details-marker{display:none}
+details.done-sec>summary .da{margin-left:auto;color:#94a3b8;font-size:18px;transition:transform .15s}
+details.done-sec[open]>summary .da{transform:rotate(90deg);color:#0891b2}
+.done-sec .done-body{padding:14px 18px}
+.done-card{position:relative;background:#fbfcfd;border:1px solid #e2e8f0;border-radius:10px;padding:11px 14px;display:flex;flex-wrap:wrap;align-items:center;gap:8px 18px}
+.done-card + .done-card{margin-top:10px}
+.done-card .dc-nm{font-weight:700;font-size:14px}
+.done-card .dc-meta{font-size:12px;color:#475569}
+.done-card .dc-meta b{color:#1f2330}
+.done-card .dc-rib{display:inline-block;color:#fff;background:#5A7184;font-size:9px;font-weight:800;letter-spacing:.05em;padding:2px 9px;border-radius:999px}
+.done-card .restore{margin-left:auto;padding:6px 12px;border:1px solid #0891b2;background:#fff;color:#0891b2;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer}
+.done-card .restore:hover{background:#ecfeff}
+/* CARD CONCLUSE APRIBILI — riusano .det con la tinta neutra della sezione conclusi */
+.done-body .det{background:#fbfcfd;border-color:#e2e8f0;box-shadow:0 1px 4px rgba(15,23,42,.05)}
+.done-body .det .body{background:#fff}
+.done-body .det+.det{margin-top:0}
+
+/* ===== TAB 3 — CRONOLOGIA INSTALLAZIONI ===== */
+/* Struttura: barra filtri (.cron-filterbar) + DATARIO multi-mese (.cron-cal-wrap)
+   + pill FV/Termico + lista giorni (.cron-day, con id ancora) e card evento
+   compatte a griglia (.cron-grid > .cron-evt). Niente kanban / equalizeRows qui. */
+
+/* FASCIA HOVER (sopra il datario): elenco clienti del giorno sotto il mouse */
+.cron-hoverbar{background:#fff;border:1px solid #cdeaf2;border-radius:10px;padding:9px 13px;margin-bottom:10px;font-size:12px;line-height:1.4;color:#94a3b8;font-style:italic;min-height:20px;box-shadow:0 1px 5px rgba(8,145,178,.05)}
+.cron-hoverbar.filled{color:#0e7490;font-style:normal;font-weight:600;border-color:#0891b2;background:#f0fbfe}
+
+/* DATARIO — mesi affiancati orizzontalmente, contenitore scorrevole */
+.cron-cal-wrap{display:flex;gap:16px;overflow-x:auto;background:#fff;border:1px solid #e6e8ee;border-radius:12px;padding:14px;margin-bottom:14px;box-shadow:0 1px 5px rgba(8,145,178,.05)}
+.cron-month{flex:0 0 auto;min-width:224px}
+.cron-mh{font-size:12px;font-weight:800;color:#0e7490;letter-spacing:.02em;text-align:center;margin-bottom:8px}
+.cron-wd{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;margin-bottom:4px}
+.cron-wd span{font-size:9px;font-weight:700;text-transform:uppercase;color:#94a3b8;text-align:center;letter-spacing:.02em}
+.cron-cells{display:grid;grid-template-columns:repeat(7,1fr);gap:3px}
+.cron-cell{min-height:32px;border-radius:6px;background:#f8fafc;border:1px solid #eef0f4;padding:3px 2px;display:flex;flex-direction:column;align-items:center;gap:2px}
+.cron-cell.empty{background:transparent;border-color:transparent}
+.cron-cell .cd-n{font-size:9px;color:#64748b;line-height:1}
+.cron-cell.has{cursor:pointer;background:#fff;border-color:#cdeaf2}
+.cron-cell.has:hover{background:#ecfeff;border-color:#0891b2}
+.cron-cell.has .cd-n{color:#0e7490;font-weight:700}
+/* Cella del giorno di OGGI: evidenziazione leggera (anche se senza eventi) */
+.cron-cell.today{background:#e0f7fb;border-color:#0891b2;box-shadow:0 0 0 1px #0891b2 inset}
+.cron-cell.today .cd-n{color:#0e7490;font-weight:800}
+.cd-sq{display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:2px}
+.csq{width:7px;height:7px;border-radius:2px;display:inline-block}
+.csq.sop{background:#f472b6}   /* SOPRALLUOGO — rosa (come le card evento) */
+.csq.inst{background:#5bbcd6}  /* INSTALLAZIONE — azzurro (come le card evento) */
+.csq-more{font-size:8px;font-weight:700;color:#64748b;line-height:1}
+
+/* LISTA GIORNI */
+.cron-list{display:flex;flex-direction:column;gap:18px}
+.cron-day{background:#fff;border:1px solid #e6e8ee;border-radius:12px;padding:12px 14px;box-shadow:0 1px 5px rgba(8,145,178,.05);scroll-margin-top:14px}
+.cron-dh{font-size:13px;font-weight:800;color:#0e7490;letter-spacing:.03em;border-bottom:2px solid #cdeaf2;padding-bottom:7px;margin-bottom:11px}
+/* Evidenziazione breve del giorno raggiunto dal click sul datario */
+.cron-day.cron-hl{animation:cronPulse 1.6s ease}
+@keyframes cronPulse{0%{box-shadow:0 0 0 3px rgba(8,145,178,.55)}100%{box-shadow:0 0 0 3px rgba(8,145,178,0)}}
+
+/* SEZIONE IN FONDO "Concluse ed eliminate" — dopo la timeline principale.
+   Card evento identiche (stesso stile/colori/flash); i giorni sono impilati
+   (non sono dentro .cron-list) quindi hanno un margine proprio. */
+.cron-done-section{margin-top:24px;border-top:2px dashed #cdeaf2;padding-top:16px}
+.cron-done-h{font-size:14px;font-weight:800;color:#0e7490;letter-spacing:.02em;margin-bottom:14px}
+.cron-sub{margin-bottom:20px}
+.cron-sub:last-child{margin-bottom:0}
+.cron-sub-h{font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:#64748b;margin-bottom:10px}
+.cron-done-section .cron-day{margin-bottom:14px}
+.cron-done-section .cron-day:last-child{margin-bottom:0}
+
+/* GRIGLIA CARD EVENTO — piu' card per riga, wrap */
+.cron-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px;align-items:stretch}
+
+/* CARD EVENTO (compatta) — SFONDO/BORDO colorato per tipo e passato/futuro.
+   L'altezza uniforme per riga è data da align-items:stretch della griglia (le card
+   affiancate risultano TUTTE della stessa altezza, il contenuto più corto lascia
+   spazio in fondo) SENZA imporre un'altezza fissa che tagli il contenuto: niente
+   height:100%. overflow:visible + .ce-chips in flex-wrap => TUTTI i chip/flash
+   (INCASSATO, PAGATA, prodotti, tipo intervento, discrepanza, Odoo OV/OA) restano
+   VISIBILI anche quando vanno a capo su più righe, mai tagliati. Resta
+   position:relative per le fascette INCASSATO / PAGATA ancorate agli angoli. */
+.cron-evt{position:relative;border:1px solid transparent;border-radius:11px;overflow:visible;display:flex;flex-direction:column}
+.cron-evt.evt-sop{background:#fdf2f8;border-color:#fbcfe8}        /* sopralluogo oggi/futuro — rosa tenue */
+.cron-evt.evt-sop.past{background:#eef0f3;border:1.5px solid #f4a8c7}  /* sopralluogo passato — grigio, BORDO ROSA */
+.cron-evt.evt-inst{background:#ecfbff;border-color:#b6e6f2}       /* installazione oggi/futuro — azzurro tenue */
+.cron-evt.evt-inst.past{background:#eef0f3;border:1.5px solid #7ec8dd} /* installazione passata — grigio, BORDO AZZURRO */
+.cron-evt>summary{list-style:none;cursor:pointer;position:relative;padding:30px 12px 14px 12px;display:flex;flex-direction:column;gap:4px}
+.cron-evt>summary::-webkit-details-marker{display:none}
+/* Angolo in alto a destra: badge FASE + data, con freccia di apertura */
+.ce-top{position:absolute;top:7px;right:9px;display:flex;align-items:center;gap:6px;z-index:2}
+.ce-arrow{color:#94a3b8;font-size:14px;line-height:1;transition:transform .15s}
+.cron-evt[open] .ce-arrow{transform:rotate(90deg);color:#0891b2}
+/* Badge tipo evento + data (in alto a destra) */
+/* Fascetta colorata con etichetta + DATA (gg/mm/aa): padding orizzontale ampio e
+   nessun troncamento, cosi' la data con l'anno resta dentro il contorno. */
+.ce-badge{display:inline-flex;align-items:center;gap:7px;font-size:10px;font-weight:800;letter-spacing:.02em;padding:3px 12px;border-radius:999px;color:#fff;white-space:nowrap;flex:0 0 auto;max-width:none;overflow:visible}
+.ce-badge-sop{background:#db2777}   /* Sopralluogo — rosa */
+.ce-badge-inst{background:#0891b2}  /* Installazione — azzurro */
+.ce-badge .ce-date{font-weight:700;letter-spacing:.02em;white-space:nowrap;flex:0 0 auto;max-width:none;overflow:visible;text-overflow:clip}
+.ce-nm{font-weight:700;font-size:13px;line-height:1.2}
+.ce-addr{font-size:11px;color:#6b7280;line-height:1.25}
+.ce-ct{font-size:11px;line-height:1.3}
+.ce-inst{font-size:11px;color:#334155}
+.ce-inst strong{color:#1f2330}
+.ce-chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:2px}
+/* Chip flash COMPATTI dedicati alla cronologia (piu' piccoli dei chip normali).
+   Contengono TUTTI i chip di chips(p) — vedi cronFlashChips — ma rimpiccioliti:
+   font ~8.5px, padding 1px 5px, border-radius piccolo. Vale anche per il chip
+   TIPO INTERVENTO (che eredita .chip-cron dalla stessa logica). */
+.chip-cron{font-size:8.5px;font-weight:600;padding:1px 5px;border-radius:7px}
+/* Chip TIPO EVENTO/INTERVENTO e badge DISCREPANZA nella cronologia: COMPATTI e
+   coerenti con i .chip-cron (font ~8.5px, padding 1px 5px, border-radius piccolo).
+   Il badge .disc in riga .ce-chips sovrascrive la variante grande di .disc (font
+   10px, padding 2px 8px, riga a sé) usata nelle altre viste, che NON viene toccata. */
+.ce-chips .disc{align-self:auto;margin-top:0;font-size:8.5px;font-weight:700;padding:1px 5px;border-radius:7px;line-height:1.5}
+/* Fascette INCASSATO / PAGATA piu' PICCOLE nella cronologia, stesse posizioni */
+.cron-evt .paid-rib{font-size:8px;padding:2px 8px;letter-spacing:.04em}
+.cron-evt .pagata-rib{font-size:8px;padding:2px 8px;letter-spacing:.04em}
+.ce-body{border-top:1px solid rgba(15,23,42,.08);padding:11px 12px;background:rgba(255,255,255,.65)}
+.ce-body .box{margin-bottom:9px}
+.ce-body .box:last-child{margin-bottom:0}
+
+/* BARRA AZIONI STATO (Sposta in concluse / Ripristina) — in fondo al corpo card */
+.statebar{margin-top:11px;padding-top:10px;border-top:1px dashed #d7dbe3;display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+.act.warn{background:#fff;color:#166534;border:1px solid #16a34a}
+.act.warn:hover{background:#f0fdf4}
+/* Elimina scheda — rosso tenue, discreto */
+.act.danger{background:#fff;color:#b91c1c;border:1px solid #f3b4b4}
+.act.danger:hover{background:#fef2f2}
+
+/* ===== TOAST DOWNLOAD DOCUMENTI (apriDoc) =====
+   Avviso temporaneo, NON bloccante, in basso a destra: compare mentre il file
+   viene scaricato ("Scaricamento di <nome>…") e sparisce da solo appena il
+   download parte; in caso di errore resta qualche secondo in rosso (.err).
+   Non intercetta i click (pointer-events:none). Stesse regole nel portale Area
+   Installatore (coerenza grafica). */
+.dtoast{position:fixed;right:18px;bottom:18px;z-index:9999;max-width:340px;background:#fff;color:#1f2330;border:1px solid #cfe9f0;border-left:4px solid #0891b2;border-radius:10px;padding:10px 14px;font-size:13px;font-weight:600;line-height:1.35;box-shadow:0 6px 20px rgba(15,23,42,.16);word-break:break-word;pointer-events:none}
+.dtoast.err{color:#b91c1c;background:#fef2f2;border-color:#f3b4b4;border-left-color:#b91c1c}
+
+/* ===== RESPONSIVE ===== */
+html,body{max-width:100%;overflow-x:hidden}
+img,svg{max-width:100%}
+@media(max-width:860px){
+  .wrap{max-width:100%;padding:12px}
+  /* sotto 860px: UNA SOLA COLONNA (le due colonne si impilano); nessun pareggio
+     (equalizeRows azzera i min-height imposti, rilevando la media via matchMedia) */
+  .kanban{grid-template-columns:1fr;column-gap:0;row-gap:14px}
+  .imp-grid{grid-template-columns:1fr}
+  .itile.full{grid-column:auto}
+  details.det:not([open])>summary{min-height:0}
+}
+@media(max-width:560px){
+  .wrap{padding:10px}
+  .hdr{flex-direction:column;align-items:flex-start;gap:10px}
+  .hdr .sub{text-align:left}
+  /* Mobile: i chip data restano interi (nowrap) e vanno a capo uno sotto l'altro.
+     La larghezza riservata deve bastare al chip piu' largo (INSTALLAZIONE + gg/mm/aa
+     con padding 12px per lato), altrimenti la data esce dal contorno. */
+  .main{padding-right:180px}
+  .tr{max-width:180px;right:26px;flex-wrap:wrap;gap:5px}
+  .tr-chips{flex-wrap:wrap;justify-content:flex-end}
+  .ctrls{flex-direction:column;align-items:stretch}
+  .ctrls select{min-width:0;width:100%}
+  .ctrls .act{width:100%}
+  /* Controlli impilati a tutta larghezza: gli orefs tornano in flusso sotto
+     (niente ancoraggio assoluto, che si sovrapporrebbe al pulsante full-width) */
+  details.det:not(.ro) .ctrls{padding-right:0}
+  details.det:not(.ro) .orefs.orefs-card{position:static;right:auto;bottom:auto;margin-top:6px;text-align:right}
+  details.det:not(.ro) .orefs.orefs-card.orefs-lift{margin-bottom:20px}
+  .orefs{align-self:flex-end;justify-content:flex-end}
+  .sopgrid{grid-template-columns:1fr}
+  summary{padding:18px 11px 10px 11px}
+  .body{padding:11px 11px}
+  .done-card .restore{margin-left:0}
+  /* Toast download: margini ridotti su mobile */
+  .dtoast{right:10px;bottom:10px;max-width:calc(100% - 20px)}
+}`;
+
+  // Date installazione iniziali (per practice_id) per lo stato client della sezione date
+  const initDates = {};
+  pratiche.forEach(p=>{ initDates[p.practice_id] = datesArr(p); });
+
+  // -------------------- SCRIPT (tab / filtri / azione assegna / date) ---------
+  const SCRIPT =
+    'var DINST='+JSON.stringify(initDates)+';'
+    +'function stop(e){e.preventDefault();e.stopPropagation();}'
+    // stopP: solo stopPropagation (NON preventDefault) — da usare sui campi input
+    // (es. <input type="date">) dove preventDefault sul click impedisce l'apertura
+    // del date-picker nativo del browser e blocca l'inserimento della data.
+    +'function stopP(e){e.stopPropagation();}'
+    // ----- DOWNLOAD DIRETTO DEI DOCUMENTI (nessuna apertura, nessuna anteprima) -
+    // Storia del problema (prove reali del 27/07, in ordine):
+    //  1) link diretto allo storage -> ERR_BLOCKED_BY_CLIENT / "pagina bloccata";
+    //  2) proxy /webhook/doc (stesso dominio): il server risponde 200
+    //     application/pdf, ma la scheda aperta dal LINK viene comunque bloccata
+    //     dal browser (lo stesso indirizzo digitato a mano si apre);
+    //  3) scheda vuota + blob: -> resta su about:blank (Chrome), errore
+    //     cross-origin "Blocked a frame with origin null" (Edge);
+    //  4) anteprima in overlay con iframe blob -> bloccata da Edge.
+    // COSTANTE: la fetch verso il proxy funziona SEMPRE e il salvataggio con
+    // <a download> su blob url funziona SEMPRE.
+    // Quindi: NIENTE anteprima, si SCARICA direttamente. apriDoc() fa
+    // fetch -> blob -> URL.createObjectURL -> <a download> -> click -> rimozione,
+    // e revoca il blob url dopo qualche secondo. Feedback = solo un toast
+    // temporaneo in basso a destra (.dtoast), mai un alert() bloccante.
+    // dtoast(msg, err, ms): ms=0 -> resta finche' non lo si nasconde.
+    +'function dtoast(msg,err,ms){var t=document.getElementById("dtoast");if(!t){t=document.createElement("div");t.id="dtoast";document.body.appendChild(t);}t.className="dtoast"+(err?" err":"");t.textContent=msg;if(window.__dtoastT){clearTimeout(window.__dtoastT);window.__dtoastT=null;}if(ms>0){window.__dtoastT=setTimeout(dtoastHide,ms);}}'
+    +'function dtoastHide(){if(window.__dtoastT){clearTimeout(window.__dtoastT);window.__dtoastT=null;}var t=document.getElementById("dtoast");if(t&&t.parentNode)t.parentNode.removeChild(t);}'
+    // __dlBusy: evita i doppi click ravvicinati sullo STESSO documento (chiave=url)
+    +'function apriDoc(u,nome){var nm=nome||"documento.pdf";'
+    +'if(!window.__dlBusy)window.__dlBusy={};'
+    +'if(window.__dlBusy[u])return;'
+    +'window.__dlBusy[u]=1;'
+    +'dtoast("Scaricamento di "+nm+"\\u2026",false,0);'
+    +'fetch(u).then(function(r){if(!r.ok)throw new Error("HTTP "+r.status);return r.blob();}).then(function(b){'
+    +'var burl=URL.createObjectURL(b);'
+    +'var a=document.createElement("a");a.href=burl;a.download=nm;a.style.display="none";'
+    +'document.body.appendChild(a);a.click();'
+    +'if(a.parentNode)a.parentNode.removeChild(a);'
+    +'setTimeout(function(){try{URL.revokeObjectURL(burl);}catch(e){}},10000);'
+    +'window.__dlBusy[u]=0;dtoastHide();'
+    +'}).catch(function(e){'
+    +'window.__dlBusy[u]=0;'
+    +'dtoast("Non riesco a scaricare il documento: "+((e&&e.message)?e.message:String(e)),true,6000);'
+    +'});}'
+    +'function showTab(id,btn){document.querySelectorAll(".panel").forEach(function(p){p.classList.remove("active");});document.querySelectorAll(".tab").forEach(function(t){t.classList.remove("active");});document.getElementById(id).classList.add("active");btn.classList.add("active");equalizeRows();if(id==="cronologia"){markCronPast();setTimeout(cronScrollOggi,60);}}'
+    // ----- MENU "APRI PORTALI" (hamburger) -----
+    +'function togglePortalMenu(e){e.stopPropagation();var d=document.getElementById("pmenuDrop");if(d)d.classList.toggle("open");}'
+    +'document.addEventListener("click",function(e){var w=document.getElementById("pmenuWrap");var d=document.getElementById("pmenuDrop");if(d&&d.classList.contains("open")&&w&&!w.contains(e.target)){d.classList.remove("open");}});'
+    // Filtro "Per installatore": mostra/nasconde i blocchi per installatore
+    +'function filterInstaller(val){document.querySelectorAll("#perinstallatore .inst-block").forEach(function(b){var m=(val==="Tutti")||(b.getAttribute("data-installer")===val);b.style.display=m?"":"none";});equalizeRows();}'
+    // Filtro COMBINATO (Incasso + Testo): una card e' visibile solo se passa
+    // ENTRAMBI i filtri. Stato per pannello in FSTATE.
+    +'var FSTATE={assegnazione:{incasso:"Tutti",text:"",ptype:"fotovoltaico",nosop:false,noinst:false},perinstallatore:{incasso:"Tutti",text:"",ptype:"fotovoltaico",nosop:false,noinst:false},cronologia:{incasso:"Tutti",text:"",ptype:"fotovoltaico",nosop:false,noinst:false}};'
+    +'function incassoKey(v){if(v==="Acconto 30%")return "acconto30";if(v==="Acconto 50%")return "acconto50";if(v==="Saldo")return "saldo";return "Tutti";}'
+    // Filtro TIPO (sotto-schede FV / Termico) — CLASSIFICAZIONE ESCLUSIVA su
+    // data-tipo ('termico' | 'fotovoltaico'): la scheda mostra SOLO le card del
+    // proprio tipo (uguaglianza esatta). Ogni card sta in una sola scheda.
+    +'function typeMatch(tipo,sel){return tipo===sel;}'
+    // Il filtro NON tocca la sezione Eliminate (card sempre consultabili lì).
+    // Card visibile solo se passa TIPO && INCASSO && TESTO.
+    +'function applyFilters(panelId){var st=FSTATE[panelId]||{incasso:"Tutti",text:"",ptype:"fotovoltaico",nosop:false,noinst:false};var key=incassoKey(st.incasso);var q=(st.text||"").trim().toLowerCase();var pt=st.ptype||"fotovoltaico";var noSop=!!st.nosop;var noInst=!!st.noinst;var sel=(panelId==="cronologia")?"#cronologia .cron-evt":"#"+panelId+" .det";document.querySelectorAll(sel).forEach(function(c){if(!c.hasAttribute("data-incasso"))return;if(c.closest&&c.closest(".eliminate-sec"))return;var okI=(key==="Tutti")||(c.getAttribute("data-incasso")===key);var okT=(!q)||((c.getAttribute("data-search")||"").indexOf(q)!==-1);var okP=typeMatch(c.getAttribute("data-tipo"),pt);var okS=(!noSop)||(c.getAttribute("data-nosop")==="1");var okN=(!noInst)||(c.getAttribute("data-noinst")==="1");c.style.display=(okI&&okT&&okP&&okS&&okN)?"":"none";});if(panelId==="cronologia"){document.querySelectorAll("#cronologia .cron-day").forEach(function(dy){var any=false;dy.querySelectorAll(".cron-evt").forEach(function(ev){if(ev.style.display!=="none")any=true;});dy.style.display=any?"":"none";});document.querySelectorAll("#cronologia .cron-sub").forEach(function(sb){var anyD=false;sb.querySelectorAll(".cron-day").forEach(function(dy){if(dy.style.display!=="none")anyD=true;});sb.style.display=anyD?"":"none";});var _sec=document.querySelector("#cronologia .cron-done-section");if(_sec){var _anyS=false;_sec.querySelectorAll(".cron-sub").forEach(function(sb){if(sb.style.display!=="none")_anyS=true;});_sec.style.display=_anyS?"":"none";}}equalizeRows();}'
+    // ----- DATARIO: click su cella-giorno -> scroll all\'intestazione del giorno -----
+    +'function cronGo(k){var h=document.getElementById("cron-"+k);if(!h)return;h.scrollIntoView({behavior:"smooth",block:"start"});h.classList.remove("cron-hl");void h.offsetWidth;h.classList.add("cron-hl");setTimeout(function(){h.classList.remove("cron-hl");},1600);}'
+    // ----- DATARIO: hover su cella-giorno con eventi -> popola la FASCIA con i clienti -----
+    // Su mouseout si LASCIA l\'ultimo contenuto (nessun reset). Il title della cella resta come fallback.
+    +'function cronHover(cell){var b=document.getElementById("cronHoverbar");if(!b||!cell)return;var t=cell.getAttribute("data-clients")||"";if(t){b.textContent=t;b.classList.add("filled");}}'
+    // ----- AUTO-POSIZIONAMENTO all\'apertura della tab Cronologia -----
+    // Porta in cima il giorno di OGGI (se ha eventi); altrimenti il PRIMO giorno
+    // FUTURO con eventi (prima data >= oggi); se tutte le date sono passate, si
+    // posiziona sull\'ULTIMO giorno (il piu\' recente, in fondo). I giorni sono in
+    // ordine CRESCENTE nel DOM, quindi il primo con chiave >= oggi e\' il prossimo.
+    +'function cronScrollOggi(){var days=document.querySelectorAll("#cronologia .cron-list .cron-day");if(!days.length)return;var n=new Date();var today=n.getFullYear()+"-"+String(n.getMonth()+1).padStart(2,"0")+"-"+String(n.getDate()).padStart(2,"0");var target=null,future=null;for(var i=0;i<days.length;i++){var id=days[i].id||"";var k=(id.indexOf("cron-")===0)?id.slice(5):"";if(!k)continue;if(k===today){target=days[i];break;}if(k>today&&!future){future=days[i];}}if(!target)target=future;if(!target)target=days[days.length-1];if(target)target.scrollIntoView({behavior:"smooth",block:"start"});}'
+    // ----- SFONDO/BORDO card evento: riconciliazione PASSATO (client-side, fuso locale) -----
+    // Aggiunge/toglie la classe .past a TUTTE le card (sopralluoghi e installazioni)
+    // con data-daykey < oggi. Il tipo (.evt-sop / .evt-inst) resta invariato; e\' il
+    // CSS che colora: sopralluoghi passati -> grigio + BORDO ROSA, installazioni
+    // passate -> grigio + BORDO AZZURRO. Future/odierne restano rosa / azzurre.
+    +'function markCronPast(){var n=new Date();var today=n.getFullYear()+"-"+String(n.getMonth()+1).padStart(2,"0")+"-"+String(n.getDate()).padStart(2,"0");document.querySelectorAll("#cronologia .cron-evt").forEach(function(c){var k=c.getAttribute("data-daykey")||"";var past=k&&(k<today);if(past){c.classList.add("past");}else{c.classList.remove("past");}});}'
+    +'function filterIncasso(panelId,val){if(!FSTATE[panelId])FSTATE[panelId]={incasso:"Tutti",text:"",ptype:"fotovoltaico"};FSTATE[panelId].incasso=val;applyFilters(panelId);}'
+    +'function filterText(panelId,val){if(!FSTATE[panelId])FSTATE[panelId]={incasso:"Tutti",text:"",ptype:"fotovoltaico",nosop:false,noinst:false};FSTATE[panelId].text=val;applyFilters(panelId);}'
+    // Filtri "Senza sopralluogo" / "Senza installazione" (combinabili in AND tra loro
+    // e con gli altri filtri): mostrano solo le card con data_sopralluogo vuota
+    // (data-nosop="1") e/o senza date in date_installazione (data-noinst="1").
+    +'function filterNoSop(panelId,checked){if(!FSTATE[panelId])FSTATE[panelId]={incasso:"Tutti",text:"",ptype:"fotovoltaico",nosop:false,noinst:false};FSTATE[panelId].nosop=!!checked;applyFilters(panelId);}'
+    +'function filterNoInst(panelId,checked){if(!FSTATE[panelId])FSTATE[panelId]={incasso:"Tutti",text:"",ptype:"fotovoltaico",nosop:false,noinst:false};FSTATE[panelId].noinst=!!checked;applyFilters(panelId);}'
+    // Cambio sotto-scheda FV / Termico (per-tab): evidenzia la pill attiva e riapplica.
+    +'function selectPtype(panelId,val,btn){if(!FSTATE[panelId])FSTATE[panelId]={incasso:"Tutti",text:"",ptype:"fotovoltaico"};FSTATE[panelId].ptype=val;if(btn&&btn.parentNode){btn.parentNode.querySelectorAll(".ptab").forEach(function(t){t.classList.remove("active");});btn.classList.add("active");}applyFilters(panelId);}'
+    // Stato manuale: sposta in concluse / ripristina tra le attive / elimina (reali, via webhook)
+    +'function spostaConclusi(pid){if(!confirm("Spostare questa pratica tra i lavori conclusi?"))return;post("sposta_conclusi",pid,{}).then(function(r){if(r&&r.ok){location.reload();}else{alert((r&&r.error)||"Errore");}});}'
+    +'function ripristina(pid){if(!confirm("Riportare questa pratica tra le pratiche attive?"))return;post("ripristina_attiva",pid,{}).then(function(r){if(r&&r.ok){location.reload();}else{alert((r&&r.error)||"Errore");}});}'
+    // Elimina scheda -> sposta nelle Eliminate (NON cancella)
+    +'function eliminaScheda(pid){if(!confirm("Spostare questa scheda nelle Eliminate?"))return;post("sposta_eliminate",pid,{}).then(function(r){if(r&&r.ok){location.reload();}else{alert((r&&r.error)||"Errore");}});}'
+    // POST verso il webhook azioni
+    +'function post(azione,practice_id,payload){return fetch("https://n8n.srv1030489.hstgr.cloud/webhook/gestione-next-azioni",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({azione:azione,practice_id:practice_id,payload:payload||{}})}).then(function(r){return r.text();}).then(function(t){try{return JSON.parse(t);}catch(e){return {ok:false,error:"risposta vuota"};}}).catch(function(e){return {ok:false,error:String(e)};});}'
+    // Azione assegna: legge installatore scelto + sopralluoghista, invia e ricarica
+    +'function assegna(pid,sel){var iid=sel?sel.value:"";if(!iid){return;}var sopSel=document.getElementById("sop_"+pid);var sop=sopSel?sopSel.value:"";sel.disabled=true;post("assegna",pid,{installatore_id:iid,sopralluoghista:sop}).then(function(r){if(r&&r.ok){location.reload();}else{sel.disabled=false;alert((r&&r.error)||"Errore");}});}'
+    // ----- SEZIONE DATE editabile (Sopralluogo / Installazione) -----
+    +'function say(pid,txt,ok){var m=document.getElementById("msg_"+pid);if(m){m.textContent=txt;m.className="msg "+(ok?"ok":"err");}}'
+    +'function renderDates(pid){var box=document.getElementById("dates_"+pid);if(!box)return;var a=DINST[pid]||[];if(!a.length){box.innerHTML=\'<span class="dnote">Da programmare</span>\';return;}box.innerHTML=a.map(function(v,i){return \'<span class="dtag"><input type="date" value="\'+(v||"")+\'" onclick="stopP(event)" onchange="chDate(\\\'\'+pid+\'\\\',\'+i+\',this.value)"><button class="x" onclick="stop(event);rmDate(\\\'\'+pid+\'\\\',\'+i+\')">&times;</button></span>\';}).join("");}'
+    +'function addDate(pid){DINST[pid]=DINST[pid]||[];DINST[pid].push("");renderDates(pid);}'
+    +'function rmDate(pid,i){DINST[pid].splice(i,1);renderDates(pid);}'
+    +'function chDate(pid,i,v){DINST[pid][i]=v;}'
+    +'function salvaSop(pid){var dEl=document.getElementById("sopd_"+pid),mEl=document.getElementById("sopm_"+pid);var data=dEl?dEl.value:"";var mod=mEl?mEl.value:"";post("salva_sopralluogo",pid,{data:data,modalita:mod}).then(function(r){say(pid,r&&r.ok?"Sopralluogo salvato":((r&&r.error)||"Errore"),r&&r.ok);});}'
+        // ----- SOLLECITI DOCUMENTI (098-SOLLECITI): sposta / blocca / riprendi / chiudi voce -----
+    +'function sollDopo(pid,r,okMsg){var m=document.getElementById("sollmsg_"+pid);if(m){m.textContent=(r&&r.ok)?okMsg:((r&&r.error)||"Errore");m.style.color=(r&&r.ok)?"#166534":"#b91c1c";}if(r&&r.ok){setTimeout(function(){location.reload();},900);}}'
+    +'function sollSposta(pid){var el=document.getElementById("solld_"+pid);var v=el?el.value:"";if(!v){return;}post("sollecito_sposta",pid,{quando:v}).then(function(r){sollDopo(pid,r,"Sollecito spostato al "+v.split("-").reverse().join("/")+" alle 9:00");});}'
+    +'function sollCmd(pid,az){post(az,pid,{}).then(function(r){sollDopo(pid,r,az==="sollecito_blocca"?"Invio bloccato":"Solleciti ripresi: il prossimo parte il giorno lavorativo dopo alle 9:00");});}'
+    +'function sollChiudi(pid,voce,btn){if(btn){btn.disabled=true;}post("richiesta_chiudi_voce",pid,{voce:voce}).then(function(r){sollDopo(pid,r,"Voce chiusa");});}'
+    +'function salvaInst(pid){var a=(DINST[pid]||[]).filter(Boolean);post("salva_installazione",pid,{date:a}).then(function(r){say(pid,r&&r.ok?"Date installazione salvate":((r&&r.error)||"Errore"),r&&r.ok);});}'
+    // ----- NOTE per l'installatore (salva su practices.note_installatore) -----
+    +'function salvaNote(pid){var el=document.getElementById("noteinst_"+pid);var v=el?el.value:"";var m=document.getElementById("notemsg_"+pid);if(el)el.disabled=true;post("salva_note",pid,{note:v}).then(function(r){if(el)el.disabled=false;if(m){m.textContent=(r&&r.ok)?"Note salvate":((r&&r.error)||"Errore");m.className="msg "+((r&&r.ok)?"ok":"err");}});}'
+    +'document.querySelectorAll("[id^=dates_]").forEach(function(el){renderDates(el.id.replace("dates_",""));});'
+    // ----- ALLINEAMENTO A COPPIE (equalizeRows) -----
+    // Per ogni kanban accoppia la i-esima card VISIBILE della colonna sinistra con
+    // la i-esima VISIBILE della destra: SOLO se ENTRAMBE chiuse pareggia il
+    // min-height (= max delle due altezze); se una e' aperta o manca, azzera il
+    // min-height della coppia. Sotto 860px (una sola colonna) nessun pareggio.
+    +'function _closed(el){return el&&el.tagName==="DETAILS"&&!el.hasAttribute("open");}'
+    +'function equalizeRows(){var narrow=window.matchMedia("(max-width:860px)").matches;document.querySelectorAll(".kanban").forEach(function(k){var L=[],R=[];k.querySelectorAll(".kcol.todo>.klist>.det").forEach(function(c){if(c.style.display!=="none")L.push(c);});k.querySelectorAll(".kcol.doing>.klist>.det").forEach(function(c){if(c.style.display!=="none")R.push(c);});var n=Math.max(L.length,R.length);for(var i=0;i<n;i++){var a=L[i],b=R[i];if(a)a.style.minHeight="";if(b)b.style.minHeight="";if(narrow)continue;if(a&&b&&_closed(a)&&_closed(b)){var h=Math.max(a.offsetHeight,b.offsetHeight);a.style.minHeight=h+"px";b.style.minHeight=h+"px";}}});}'
+    // Ricalcolo su: apertura/chiusura di QUALSIASI details, resize, e al load.
+    +'document.querySelectorAll("details").forEach(function(dd){dd.addEventListener("toggle",equalizeRows);});'
+    +'window.addEventListener("resize",function(){equalizeRows();});'
+    // Applica il filtro tipo di DEFAULT (Fotovoltaico) all'avvio, su entrambe le tab,
+    // così le card solo-termico partono nascoste. applyFilters richiama equalizeRows.
+    +'function applyInitialFilters(){applyFilters("assegnazione");applyFilters("perinstallatore");applyFilters("cronologia");}'
+    // Al load: se la tab Cronologia risultasse gia\' attiva, auto-posiziona su oggi.
+    +'function cronInitScroll(){var p=document.getElementById("cronologia");if(p&&p.classList.contains("active")){setTimeout(cronScrollOggi,60);}}'
+    +'if(document.readyState!=="loading"){markCronPast();equalizeRows();applyInitialFilters();cronInitScroll();}else{document.addEventListener("DOMContentLoaded",function(){markCronPast();equalizeRows();applyInitialFilters();cronInitScroll();});}';
+
+  // -------------------- HTML ------------------------------------------------
+  return '<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Gestione Installatori — NEXT SRL</title>'
+    +'<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap">'
+    +'<style>'+CSS+CSS_PORTALE+'</style>'
+    +'<script>window.addEventListener("message",function(e){var d=e.data||{};if(d.tipo==="tema"&&(d.tema==="chiaro"||d.tema==="scuro"))document.documentElement.setAttribute("data-tema",d.tema);});<\/script>'
+    +'</head><body>'
+    +'<div class="wrap">'
+      +'<div class="hdr">'
+        +'<div><h1>Gestione installatori</h1>'
+          +'<div class="sotto">Assegnazione delle pratiche fotovoltaiche a installatori e coordinatori</div>'
+          +'<div class="conti">'
+            +'<span class="on"><b>'+attive+'</b> attive</span>'
+            +'<span><b>'+inEntrata.length+'</b> in entrata</span>'
+            +'<span><b>'+assegnate.length+'</b> assegnate</span>'
+            +'<span><b>'+conclusi.length+'</b> '+(conclusi.length===1?'conclusa':'concluse')+'</span>'
+          +'</div></div>'
+        +'<div class="lato"><span class="dove">NEXT SRL · Back office</span>'+portalMenu()+'</div>'
+      +'</div>'
+      +fasciaAttesa()
+      +'<div class="tabs">'
+        +'<button class="tab active" onclick="showTab(\'assegnazione\',this)">Assegnazione</button>'
+        +'<button class="tab" onclick="showTab(\'perinstallatore\',this)">Per installatore</button>'
+        +'<button class="tab" onclick="showTab(\'cronologia\',this)">Cronologia installazioni</button>'
+      +'</div>'
+      +tab1
+      +tab2
+      +tab3
+    +'</div>'
+    +'<script>'+SCRIPT+'<\/script>'
+  +'</body></html>';
+}
+
+// ===========================================================================
+// MOTORE DISCREPANZE — estrazione valori dall'ORDINE Odoo (righe sale.order.line)
+// e confronto ESATTO (nessuna tolleranza) con i valori a CONTRATTO (Supabase).
+// Tutte funzioni PURE: ricevono le righe ordine gia' lette in batch e i valori
+// pratica; restituiscono l'array [{campo, contratto, odoo, diverge}] delle voci
+// EFFETTIVAMENTE confrontabili (contratto E Odoo disponibili). Se un dato Odoo
+// non e' ricavabile la voce viene OMESSA (niente falsi positivi); presenza
+// accumulo / wifi / colonnina sono sempre confrontate come Si'/No.
+// ===========================================================================
+function _pnum(s){ if(s==null) return null; const n=parseFloat(String(s).replace(/\s/g,'').replace(',','.')); return isNaN(n)?null:n; }
+function _fmtNum(n){ return String(n).replace('.',','); }
+function _normStr(s){ return String(s==null?'':s).toUpperCase().replace(/\s+/g,' ').trim(); }
+function _titleTipo(t){ if(!t) return ''; return t.charAt(0)+t.slice(1).toLowerCase(); }
+function _titleClima(s){ if(!s) return ''; return String(s).split(' ').map(w=>w?w.charAt(0)+w.slice(1).toLowerCase():w).join(' '); }
+function _numEq(a,b){ return Math.round(Number(a)*1000)===Math.round(Number(b)*1000); }
+
+// Deduzione potenza modulo dall'ordine FV: potenza_kWp*1000 = n_moduli*potenza_modulo.
+// Restituisce l'array dei valori di catalogo che dividono ESATTAMENTE i Watt.
+function _deduceModulo(kwp, potenze){
+  if(kwp==null || !Array.isArray(potenze) || !potenze.length) return [];
+  const watts=Math.round(Number(kwp)*1000); const ex=[];
+  potenze.forEach(pw=>{ const w=Number(pw); if(w>0 && watts % w===0) ex.push(w); });
+  return ex;
+}
+// Potenza modulo a CONTRATTO (Wp): catalogo del modulo_id, oppure spunta Q.410/Q.470.
+function _contractModuloWp(p){
+  if(p.modulo_potenza_wp!=null) return Number(p.modulo_potenza_wp);
+  const f=p.flash||{}; const m=(f.moduli||'').toString().toUpperCase();
+  if(m.indexOf('Q.410')!==-1) return 410;
+  if(m.indexOf('Q.470')!==-1) return 470;
+  return null;
+}
+// Potenza modulo citata nelle NOTE del contratto (p.note_contratto, per il FV
+// coalesce(fv_altro_desc, note, ...)). REGOLA temporanea (finche' la modifica al
+// contratto non e' operativa): a contratto viene spuntato un modulo (es. Q.410 ->
+// 410 Wp) ma a volte nelle NOTE se ne cita uno DIVERSO (es. 490) ed e' QUEL modulo
+// che viene caricato in Odoo. Quindi per la voce MODULO le note VINCONO sulla spunta.
+// Estrazione robusta: primo numero INTERO plausibile tra 400 e 600, eventualmente
+// seguito da 'W'/'Wp' o citato in contesti tipo "modul(o/i)" / "da"
+// (es. "moduli da 490", "490W", "490 Wp" -> 490). Nessun match -> null.
+function _notesModuloWp(p){
+  const txt = (p.note_contratto == null ? '' : String(p.note_contratto));
+  if(!txt) return null;
+  // Numero di 3 cifre (token isolato), eventuale suffisso 'W'/'Wp'; si scorre e si
+  // ritorna il PRIMO valore effettivamente compreso tra 400 e 600 (potenza modulo).
+  const re = /(?:^|[^\d])(\d{3})\s*(?:wp|w)?(?![\d])/ig;
+  let m;
+  while((m = re.exec(txt)) !== null){
+    const n = Number(m[1]);
+    if(n >= 400 && n <= 600) return n;
+  }
+  return null;
+}
+// Estrae i valori Odoo dalle righe dell'ordine FOTOVOLTAICO.
+function _odooFvValues(lines){
+  if(!Array.isArray(lines) || !lines.length) return null;
+  const v={ kwp:null, inverterTipo:null, inverterKw:null, accumulo:false, accumuloKwh:null, wifi:false, colonnina:false };
+  let kitTipo=null, invTipo=null;
+  for(const ln of lines){
+    const up=(ln.name||'').toString().toUpperCase();
+    if(up.indexOf('SOPRALLUOGO CLIENTE')!==-1) continue;
+    if(/^\s*INST\./.test(up)) continue;                                  // manodopera
+    if(Number(ln.qty)===0 && up.indexOf('PRODOTTI:')!==-1) continue;     // riga riepilogo
+    const mk=up.match(/IMPIANTO FOTOVOLTAICO DA\s*([\d.,]+)\s*KWP/);
+    if(mk){ const n=_pnum(mk[1]); if(n!=null) v.kwp=n;
+            if(/\bIBRIDO\b/.test(up)) kitTipo='IBRIDO'; else if(/\bTRADIZIONALE\b/.test(up)) kitTipo='TRADIZIONALE'; }
+    if(up.indexOf('INVERTER')!==-1){
+      if(/\bIBRIDO\b/.test(up)) invTipo='IBRIDO'; else if(/\bTRADIZIONALE\b/.test(up)) invTipo='TRADIZIONALE';
+      const mi=up.match(/(\d+(?:[.,]\d+)?)\s*K(?![A-Z0-9])/);            // numero prima di 'K' (ESY-3K=3)
+      if(mi){ const n=_pnum(mi[1]); if(n!=null) v.inverterKw=n; }
+    }
+    if(up.indexOf('BATTERIA')!==-1){
+      v.accumulo=true;
+      const mb=up.match(/([\d.,]+)\s*KWH/);                              // capacita' prima di 'kWh'
+      if(mb){ const n=_pnum(mb[1]); if(n!=null) v.accumuloKwh=n; }
+    }
+    if(up.indexOf('WIFI DEVICE')!==-1) v.wifi=true;
+    if(up.indexOf('STAZIONE DI RICARICA')!==-1) v.colonnina=true;
+  }
+  v.inverterTipo = invTipo || kitTipo;
+  return v;
+}
+// Estrae i valori Odoo dalle righe dell'ordine TERMICO.
+function _odooHeatValues(lines){
+  if(!Array.isArray(lines) || !lines.length) return null;
+  const v={ pigmaModel:null, pigmaTaglia:null, valvoleQty:null, clima:null, wifi:false };
+  for(const ln of lines){
+    const up=(ln.name||'').toString().toUpperCase();
+    if(up.indexOf('SOPRALLUOGO CLIENTE')!==-1) continue;
+    if(/^\s*INST\./.test(up)) continue;
+    if(Number(ln.qty)===0 && up.indexOf('PRODOTTI:')!==-1) continue;
+    if(up.indexOf('PIGMA')!==-1){
+      const mm=up.match(/PIGMA\s*(\d+)/); if(mm) v.pigmaModel=mm[1];
+      const mt=up.match(/(\d{2,3})\s*(?:LT|LITRI|L\b)/); if(mt) v.pigmaTaglia=mt[1];
+    }
+    if(up.indexOf('VALVOL')!==-1){
+      const q=Number(ln.qty); if(!isNaN(q)&&q>0) v.valvoleQty=(v.valvoleQty||0)+q;
+    }
+    const mc=up.match(/\b(ALYS|DUAL|PRIOS)\s*(\d+)/); if(mc) v.clima=mc[1]+' '+mc[2];
+    if(up.indexOf('WIFI DEVICE')!==-1) v.wifi=true;
+  }
+  return v;
+}
+// Confronto FOTOVOLTAICO -> array voci confrontabili.
+function _fvConfronto(p, lines, MODP){
+  const v=_odooFvValues(lines); if(!v) return null;
+  const f=p.flash||{}; const rows=[];
+  if(f.kwp!=null && v.kwp!=null)
+    rows.push({campo:'Potenza impianto', contratto:_fmtNum(f.kwp)+' kWp', odoo:_fmtNum(v.kwp)+' kWp', diverge:!_numEq(f.kwp, v.kwp)});
+  // Potenza modulo a CONTRATTO: le NOTE del contratto hanno la PRECEDENZA sulla
+  // spunta/catalogo (vedi _notesModuloWp). Se le note citano una potenza plausibile
+  // si usa quella, altrimenti si ricade sul valore della spunta/catalogo di prima.
+  const noteWp=_notesModuloWp(p);
+  const fromNote=(noteWp!=null);
+  const cWp=fromNote ? noteWp : _contractModuloWp(p);
+  const ex=_deduceModulo(v.kwp, MODP);
+  let odooWp=null;
+  if(cWp!=null){
+    if(ex.indexOf(cWp)!==-1) odooWp=cWp; else if(ex.length===1) odooWp=ex[0];
+    // Discrepanza sul Modulo SOLO se la potenza a contratto (note>spunta) differisce
+    // da quella DEDOTTA da Odoo. Se il valore arriva dalle note lo si segnala.
+    if(odooWp!=null) rows.push({campo:'Modulo (potenza)', contratto:cWp+' Wp'+(fromNote?' (da note)':''), odoo:odooWp+' Wp', diverge:Number(odooWp)!==Number(cWp)});
+  }
+  // ---- N. MODULI — coerenza interna del CONTRATTO --------------------------
+  // La potenza dell'impianto a contratto (fv_kwp -> Watt) divisa per la potenza
+  // del SINGOLO modulo a contratto deve dare un numero INTERO di moduli.
+  // La potenza modulo usata e' ESATTAMENTE la stessa della voce "Modulo (potenza)"
+  // (cWp): valore delle NOTE se presente, altrimenti spunta/catalogo.
+  // Se il risultato NON e' intero (tolleranza 0,01 per errori di virgola mobile)
+  // -> voce BLOCCANTE: accende il flash rosso DISCREPANZA e compare nel box
+  // "Confronto Odoo <-> contratto". Se e' intero la riga resta NON divergente e
+  // mostra semplicemente il numero di moduli (informazione utile nel box).
+  // Se manca fv_kwp o manca la potenza modulo il controllo viene SALTATO del
+  // tutto (nessuna riga, niente falsi allarmi). Solo ramo FOTOVOLTAICO.
+  {
+    const cKwp = (p.fv_kwp!=null && p.fv_kwp!=='') ? Number(p.fv_kwp)
+               : ((f.kwp!=null && f.kwp!=='') ? Number(f.kwp) : null);
+    const mWp  = (cWp!=null) ? Number(cWp) : null;
+    if(cKwp!=null && !isNaN(cKwp) && cKwp>0 && mWp!=null && !isNaN(mWp) && mWp>0){
+      const nMod  = (cKwp*1000)/mWp;
+      const intero = Math.abs(nMod - Math.round(nMod)) < 0.01;
+      // Colonna Odoo: numero moduli DEDOTTO dall'ordine (kWp Odoo / potenza modulo
+      // dedotta) quando entrambi i dati sono disponibili, altrimenti '—'.
+      let odooTxt='—';
+      if(v.kwp!=null && odooWp!=null && Number(odooWp)>0){
+        const nOd=(Number(v.kwp)*1000)/Number(odooWp);
+        if(Math.abs(nOd - Math.round(nOd)) < 0.01) odooTxt=String(Math.round(nOd))+' moduli';
+      }
+      if(intero){
+        rows.push({campo:'N. moduli', contratto:String(Math.round(nMod))+' moduli', odoo:odooTxt, diverge:false});
+      } else {
+        rows.push({campo:'N. moduli',
+                   contratto:_fmtNum(cKwp)+' kWp / '+_fmtNum(mWp)+' Wp = '+nMod.toFixed(2).replace('.',',')+' (non intero)',
+                   odoo:odooTxt, diverge:true});
+      }
+    }
+  }
+  if(f.inverter && v.inverterTipo)
+    rows.push({campo:'Inverter tipo', contratto:f.inverter, odoo:_titleTipo(v.inverterTipo), diverge:_normStr(f.inverter)!==v.inverterTipo});
+  if(p.inverter_potenza_kw!=null && v.inverterKw!=null)
+    rows.push({campo:'Inverter potenza', contratto:_fmtNum(p.inverter_potenza_kw)+' kW', odoo:_fmtNum(v.inverterKw)+' kW', diverge:!_numEq(p.inverter_potenza_kw, v.inverterKw)});
+  { const c=!!f.accumulo, o=!!v.accumulo; rows.push({campo:'Accumulo', contratto:c?'Sì':'No', odoo:o?'Sì':'No', diverge:c!==o}); }
+  if(f.kwh!=null && v.accumuloKwh!=null)
+    rows.push({campo:'Accumulo (kWh)', contratto:_fmtNum(f.kwh)+' kWh', odoo:_fmtNum(v.accumuloKwh)+' kWh', diverge:!_numEq(f.kwh, v.accumuloKwh)});
+  { const c=!!(f.termico&&f.termico.kit_wifi), o=!!v.wifi; rows.push({campo:'WiFi', contratto:c?'Sì':'No', odoo:o?'Sì':'No', diverge:c!==o}); }
+  { const c=!!f.colonnina, o=!!v.colonnina; rows.push({campo:'Colonnina', contratto:c?'Sì':'No', odoo:o?'Sì':'No', diverge:c!==o}); }
+  return rows;
+}
+// Confronto TERMICO -> array voci confrontabili.
+function _heatConfronto(p, lines){
+  const v=_odooHeatValues(lines); if(!v) return null;
+  const f=p.flash||{}; const t=f.termico||{}; const rows=[];
+  const cModel = t.pigma80 ? '80' : (t.pigma50 ? '50' : null);
+  const cTaglia = t.pigma80 ? (t.pigma80_taglia||null) : (t.pigma50 ? (t.pigma50_taglia||null) : null);
+  if(cModel!=null && v.pigmaModel!=null)
+    rows.push({campo:'Caldaia/Pompa (Pigma)', contratto:'Pigma '+cModel, odoo:'Pigma '+v.pigmaModel, diverge:String(cModel)!==String(v.pigmaModel)});
+  if(cTaglia!=null && v.pigmaTaglia!=null)
+    rows.push({campo:'Pigma — taglia', contratto:String(cTaglia), odoo:String(v.pigmaTaglia), diverge:_normStr(cTaglia)!==_normStr(v.pigmaTaglia)});
+  if(t.valvole_num!=null && v.valvoleQty!=null)
+    rows.push({campo:'Valvole (quantità)', contratto:String(t.valvole_num), odoo:String(v.valvoleQty), diverge:Number(t.valvole_num)!==Number(v.valvoleQty)});
+  if(t.clima && v.clima)
+    rows.push({campo:'Clima', contratto:t.clima, odoo:_titleClima(v.clima), diverge:_normStr(t.clima)!==_normStr(v.clima)});
+  { const c=!!t.kit_wifi, o=!!v.wifi; rows.push({campo:'WiFi', contratto:c?'Sì':'No', odoo:o?'Sì':'No', diverge:c!==o}); }
+  return rows;
+}
+
+
+
+function arricchisciOdoo(d, OD){
+  if(!(d && d.ok && Array.isArray(d.pratiche) && d.pratiche.length && OD)) return;
+  try {
+    // ---- 1) sale.order id -> name (batch) ----
+    const soIds = Array.from(new Set(
+      d.pratiche.map(p => p.odoo_sale_order_fv_id).filter(v => v != null).map(Number)
+    ));
+    const soIdName = {};
+    if (soIds.length) {
+      const sos = OD.sos;
+      (sos || []).forEach(s => { soIdName[s.id] = s.name; });
+    }
+
+    // ---- 2) purchase.order installazione (batch) ----
+    // Recupera TUTTI i purchase.order con un origin valorizzato (incluso il
+    // partner_id). Il match pratica<->PO avviene poi in JS: origin che CONTIENE il
+    // SO name della pratica E partner_id == installatore_odoo_partner_id (vincolo
+    // che seleziona il SOLO ordine d'acquisto verso l'installatore).
+    const pos = OD.pos || [];
+
+    // Ordine di preferenza sugli stati (valore piu' basso = preferito). 'cancel'
+    // e' escluso salvo fallback quando non esiste alcun PO non annullato.
+    const PO_RANK = { purchase: 0, sent: 1, draft: 2 };
+
+    // ---- attach ai record pratica ----
+    d.pratiche.forEach(p => {
+      const nm = soIdName[Number(p.odoo_sale_order_fv_id)];
+      if (!nm) return;
+      p._so_name = nm;
+      // OA = SOLO l'ordine d'acquisto verso l'INSTALLATORE della pratica:
+      //   * l'origin del PO CONTIENE il SO name della pratica, E
+      //   * il partner_id del PO == installatore_odoo_partner_id della pratica.
+      // (Ripristina il vincolo partner precedentemente rimosso: esclude i PO verso
+      //  i fornitori materiali ITALSOL/META/...). Se la pratica non ha un
+      //  installatore Odoo, o non esiste alcun PO che soddisfa ENTRAMBI i vincoli,
+      //  l'OA resta vuoto (nessun link). Tra i candidati validi si sceglie quello
+      //  con lo stato piu' preferito (purchase > sent > draft); 'cancel' solo come
+      //  fallback.
+      const instPid = (p.installatore_odoo_partner_id != null) ? Number(p.installatore_odoo_partner_id) : null;
+      if (instPid == null) return;
+      let chosen = null, bestRank = 99;
+      for (const o of pos) {
+        if (!o.origin || String(o.origin).indexOf(nm) === -1) continue;
+        const opid = Array.isArray(o.partner_id) ? Number(o.partner_id[0]) : Number(o.partner_id);
+        if (opid !== instPid) continue;
+        if (o.state === 'cancel') { if (!chosen) chosen = o; continue; }
+        const rank = (o.state in PO_RANK) ? PO_RANK[o.state] : 3;
+        if (rank < bestRank) { bestRank = rank; chosen = o; }
+      }
+      if (chosen) { p._po_name = chosen.name; p._po_id = chosen.id; }
+    });
+
+    // ---- 3) sale.order.line BATCH per il FLASH "DISCREPANZA" ----------------
+    // Un unico search_read su TUTTE le righe degli ordini FV + termico delle
+    // pratiche in pagina; le righe si raggruppano per order_id. Poi, per ogni
+    // pratica, si estraggono i valori Odoo dal TESTO delle righe e si confrontano
+    // (ESATTO, nessuna tolleranza) con i valori a contratto -> p._confronto/_disc.
+    const MODP = Array.isArray(d.moduli_potenze) ? d.moduli_potenze.map(Number).filter(n => n > 0) : [];
+    const orderIds = Array.from(new Set(
+      [].concat(
+        d.pratiche.map(p => p.odoo_sale_order_fv_id),
+        d.pratiche.map(p => p.odoo_sale_order_heat_id)
+      ).filter(v => v != null).map(Number)
+    ));
+    const linesByOrder = {};
+    if (orderIds.length) {
+      const sol = OD.sol || [];
+      sol.forEach(l => {
+        const oid = Array.isArray(l.order_id) ? Number(l.order_id[0]) : Number(l.order_id);
+        if (!oid) return;
+        if (!linesByOrder[oid]) linesByOrder[oid] = [];
+        linesByOrder[oid].push({ name: l.name, qty: l.product_uom_qty });
+      });
+    }
+    d.pratiche.forEach(p => {
+      try {
+        let rows = null;
+        if (p.tipo_scheda === 'termico') {
+          const oid = (p.odoo_sale_order_heat_id != null) ? Number(p.odoo_sale_order_heat_id) : null;
+          if (oid != null && linesByOrder[oid]) rows = _heatConfronto(p, linesByOrder[oid]);
+        } else {
+          const oid = (p.odoo_sale_order_fv_id != null) ? Number(p.odoo_sale_order_fv_id) : null;
+          if (oid != null && linesByOrder[oid]) {
+            rows = _fvConfronto(p, linesByOrder[oid], MODP);
+            // METER (contatore per retrofit) — OBBLIGATORIO sugli AMPLIAMENTI: impianto
+            // esistente e NON rifacimento totale (imp_esistente==='si' &&
+            // imp_percorso!=='rifacimento', quindi ampliamento o aggiunta accumulo).
+            // Se nelle righe Odoo NON compare alcuna riga con 'meter' (case-insensitive)
+            // -> discrepanza BLOCCANTE (accende il flash). Sui nuovi impianti /
+            // rifacimenti totali il meter NON e' richiesto (nessuna voce aggiunta).
+            if (rows && p.imp_esistente === 'si' && p.imp_percorso !== 'rifacimento') {
+              const hasMeter = linesByOrder[oid].some(ln => (ln && ln.name != null) ? String(ln.name).toLowerCase().indexOf('meter') !== -1 : false);
+              rows.push({ campo: 'Meter mancante', contratto: 'richiesto (ampliamento)', odoo: hasMeter ? 'presente' : 'assente', diverge: !hasMeter });
+            }
+            // INTEGRAZIONE — in Odoo l'integrazione dell'impianto e' un PRODOTTO a se'
+            // ("INTEGRAZIONE IMPIANTO", product.template id 129) e compare come RIGA
+            // dell'ordine di vendita. Se a CONTRATTO l'impianto risulta INTEGRATO
+            // (flash.integrato, derivato dalle note del venditore) ma nelle righe Odoo
+            // NON c'e' alcuna riga con 'integrazion' (case-insensitive) -> discrepanza
+            // BLOCCANTE (accende il flash rosso, come le altre voci; solo il WiFi e'
+            // escluso). Se il contratto NON e' integrato NON si aggiunge alcuna voce:
+            // Odoo puo' avere la riga senza che il contratto la citi (nessun falso allarme).
+            if (rows && p.flash && p.flash.integrato === true) {
+              const hasIntegr = linesByOrder[oid].some(ln => (ln && ln.name != null) ? String(ln.name).toLowerCase().indexOf('integrazion') !== -1 : false);
+              rows.push({ campo: 'Integrazione', contratto: 'richiesta (impianto integrato)', odoo: hasIntegr ? 'presente' : 'assente', diverge: !hasIntegr });
+            }
+          }
+        }
+        if (rows && rows.length) {
+          p._confronto = rows;
+          // WiFi ESCLUSO dal calcolo del flash "DISCREPANZA": in Odoo il wifi device e'
+          // inserito di default e darebbe falsi positivi sistematici. La voce WiFi resta
+          // visibile nel box _confronto (marcata non bloccante), ma non accende il badge.
+          p._disc = rows.filter(r => r.diverge && r.campo !== 'WiFi');
+        }
+      } catch (ep) { /* per-pratica fail-safe: nessun flash su questa card */ }
+    });
+  } catch(e) { /* come nel nodo: senza numeri Odoo la pagina si disegna lo stesso */ }
+}
+
+/* ===== PORTALE NEXT-110: caricamento =====
+   La pagina Gestione installatori non sta piu in n8n. I dati li prepara la funzione Supabase
+   gestione-installatori (protetta dalla password della regia); qui sopra c'e il codice del nodo
+   «Disegna pagina» di WF-GESTIONE-NEXT, copiato tale e quale, che disegna la pagina. */
+var EF='https://pnxhthrheqeucoisifjw.supabase.co/functions/v1/gestione-installatori';
+var PASS='', TEMA='';
+try{ PASS=sessionStorage.getItem('regia_pass')||''; }catch(e){}
+try{ TEMA=window.parent.document.documentElement.getAttribute('data-tema')||''; }catch(e){}
+function messaggi(e){ var d=e.data||{};
+  if(d.tipo==='tema'&&(d.tema==='chiaro'||d.tema==='scuro')){ TEMA=d.tema; document.documentElement.setAttribute('data-tema',d.tema); }
+  if(d.tipo==='pass'&&d.pass&&!PASS){ PASS=d.pass; carica(); }
+}
+window.addEventListener('message',messaggi);
+function avviso(h){ var c=document.getElementById('carico'); if(c) c.innerHTML=h; }
+function chiediPass(msg){
+  avviso('<div class="chiave"><p>'+(msg||'Scrivi la password della regia per aprire la gestione installatori.')+'</p><form id="fp"><input type="password" id="ip" autocomplete="current-password" placeholder="password"><button>Entra</button></form></div>');
+  document.getElementById('fp').onsubmit=function(e){ e.preventDefault(); PASS=document.getElementById('ip').value.trim(); try{sessionStorage.setItem('regia_pass',PASS)}catch(x){} carica(); };
+}
+async function carica(){
+  if(!PASS){ chiediPass(); return; }
+  avviso('<p class="att">Carico le pratiche…</p>');
+  try{
+    var r=await fetch(EF+'?t='+encodeURIComponent(PASS)); var j=await r.json();
+    if(r.status===401){ PASS=''; try{sessionStorage.removeItem('regia_pass')}catch(x){} chiediPass('Password non valida, riprova.'); return; }
+    if(!j.ok) throw new Error(j.errore||'errore');
+    var d=j.d; if(d && d.ok===undefined && d.data) d=d.data;
+    arricchisciOdoo(d, j.od);
+    var html=buildHtml(d);
+    document.open(); document.write(html); document.close();
+    if(TEMA) document.documentElement.setAttribute('data-tema',TEMA);
+    window.removeEventListener('message',messaggi); window.addEventListener('message',messaggi);
+  }catch(e){ avviso('<p class="att">Non riesco a caricare le pratiche: '+String(e.message||e).replace(/</g,'&lt;')+'</p>'); }
+}
+if(PASS) carica(); else { try{ window.parent.postMessage({tipo:'chiedi_pass'},'*'); }catch(e){} setTimeout(function(){ if(!PASS) chiediPass(); },700); }
+</script></body></html>
